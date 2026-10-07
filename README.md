@@ -122,6 +122,4 @@ Vue 3 · Vite · Pinia · 原生 CSS · JavaScript（无 TypeScript）
 - **透明通道导出不可行**：WebCodecs 的 H.264 不含 alpha。可靠方案是绿幕 / 黑幕。
 - 打轴需要 `T` 键或播放条按钮；窄屏（≤640px）下播放条会收起该按钮，用 `T` 即可。
 
-## 许可
-
-MIT
+## 本文和本项目由AI生成
