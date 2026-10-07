@@ -1,0 +1,6 @@
+packages:
+  - '.'
+
+# 安全默认：只放行 esbuild 的安装脚本（Vite 构建必需），其余第三方包一律不执行安装期脚本。
+allowBuilds:
+  esbuild: true

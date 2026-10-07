@@ -1,0 +1,392 @@
+/* ============================================================
+   reset + 应用骨架布局
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--ui-font);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden; /* 应用自身管理滚动，避免整页出现双滚动条 */
+  -webkit-font-smoothing: antialiased;
+  text-size-adjust: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* 统一可见的键盘焦点环（无障碍必需：只有键盘操作时才显示） */
+:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* —— 应用三栏骨架 —— */
+.app-shell {
+  /* 播放条 absolute 的定位基准：外层已有 position: fixed（伪全屏），
+     但**原生全屏时 shell 仍是 static**，absolute 会退回到最近的定位祖先
+     甚至视口。这里显式声明 relative，保证两种情况都锚在 shell 底部。 */
+  position: relative;
+  display: grid;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--playerbar-h);
+  height: 100%;
+  min-height: 0;
+  /* 需求 N2：抽屉打开时为右侧让出空间，避免遮挡跳行胶囊与音量滑杆。
+     用 padding 而不是位移，内容会真正变窄重排，不会有元素被裁到屏幕外。 */
+  padding-right: 0;
+  transition: padding-right 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.app-shell.is-drawer-open {
+  padding-right: var(--drawer-shift);
+}
+
+/* 减少动态效果时不做位移过渡，直接切换 */
+.reduce-motion .app-shell,
+.reduce-motion.app-shell {
+  transition: none;
+}
+
+.app-stage {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* —— 阶段 4：展示 / 全屏模式 —— */
+/*
+ * 【布局怎么塌缩 —— 这里踩过一个坑】
+ * 最初的实现把网格压成 `0 1fr 0`（顶栏/播放条行高为 0）来让舞台占满。
+ * 结果：**控制条淡回来了，但只有 1px 高**，因为它的行高确实是 0，
+ * 被 overflow 夹成了看不见的一条 —— 拖进度条打不中。
+ * CSS 层叠只管"显不显示"，不管"有没有地方给你显示"。
+ *
+ * 现在改成：展示模式下播放条**脱离网格、浮在舞台底部**。
+ *   - grid-template-rows 只把顶栏行压到 0（顶栏本来就不需要回来）
+ *   - 播放条用 position: absolute 覆盖在舞台下方，
+ *     高度由内容自身决定，淡入时能真正占住 var(--playerbar-h)
+ *   - 这样"只剩歌词"与"控制条可用"不再互相打架
+ */
+.app-shell.is-presenting {
+  /* 顶栏行与播放条行都归零。
+     播放条已 absolute 化（浮在舞台上），不再参与网格流，
+     所以它的行必须归零 —— 否则会留下一条没人画的空白带，
+     在伪全屏（fixed + 100dvh）下就表现为底部一条白边。 */
+  grid-template-rows: 0 minmax(0, 1fr) 0;
+
+  /* 【必须显式清零 padding-right —— 这是一个真机 BUG】
+   * 抽屉打开时 .app-shell.is-drawer-open 会加 padding-right: 360px（需求 N2）。
+   * 而原生全屏时 .app-shell **就是全屏元素**，这条 padding 会被画在全屏视口内，
+   * 把 .app-stage 从 1400 挤到 1040。
+   *
+   * 为什么会露出白边：.app-shell 自身背景是透明的
+   * （实测 background: rgba(0,0,0,0)），深色舞台只由 .app-stage 的
+   * var(--lrc-bg) 绘制 —— 右侧那 360px 没有任何背景，
+   * 露出的就是浏览器底色（浅色）= 白边。
+   *
+   * 触发条件：is-drawer-open 与 is-presenting 同时存在
+   * （例如设置抽屉开着时点"演示"或按 F）。
+   * 本规则不写 padding-right 就等于"继承抽屉的避让量"，
+   * 而展示模式里抽屉是隐藏的，避让毫无意义 —— 所以必须清零。
+   */
+  padding-right: 0;
+}
+
+/* 伪全屏：拿不到原生全屏时用 fixed 把界面铺满视口 */
+.app-shell.is-presenting.is-pseudo-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  width: 100vw;
+  height: 100vh;
+  /* 移动端浏览器的地址栏会随滚动收放，用 dvh 避免内容被截断 */
+  height: 100dvh;
+}
+
+/*
+ * 全屏元素必须自己画出舞台底色。
+ *
+ * 【为什么 shell 平时是透明的，这里却要刷底色】
+ * 平时 shell 透明是对的 —— 它的子元素各自有背景，透出 body 没问题。
+ * 但进入原生全屏后，shell **就是全屏元素**：浏览器把全屏视口的底色
+ * 交给元素自己画，而 body 已经不在这个渲染上下文里了。
+ * 一旦 shell 内部有任何"没被画到"的地方（padding、grid 空隙、
+ * 未来新增的元素），露出的就是浏览器默认的**白色**画布。
+ *
+ * 用 color-mix 混入 --lrc-bg 而不是写死黑色：用户的歌词背景色
+ * （设置里可调）也能顺带覆盖到全屏边缘，不会出现"舞台深色、边缘纯黑"的割裂。
+ */
+.app-shell.is-presenting {
+  background: var(--lrc-bg);
+}
+
+/*
+ * 展示模式下无条件隐藏的 UI：顶栏、歌词信息面板、设置抽屉。
+ *
+ * 【.toasts 刻意不在这一组里 —— 这是补丁 8 修的用户可见 bug】
+ * 提示是**全局浮层**，不是"编辑界面 UI"，隐藏它没有道理。
+ * 把它归进隐藏组造成两个后果：
+ *   1. 伪全屏降级时那条"已切换为伪全屏"提示被一起吞掉 ——
+ *      用户只看到"界面突然全没了"，没有任何解释。
+ *      更糟的是原生全屏时浏览器自带"按 Esc 退出"的提示，
+ *      伪全屏没有这层兜底，用户不知道能按 Esc，等于被关在里面。
+ *   2. 自动化测试里 `toastCount > 0` 是**假阳性**：
+ *      它只数 DOM 里的 .toast 数量，不看 visibility/opacity，
+ *      元素被 visibility:hidden 藏着照样算"通过"。
+ *      已同时把断言改成"检查真实可见性"。
+ *
+ * 【播放条为什么也不在这一组里】
+ * 播放条有**两套**控制：进出展示模式与鼠标空闲（下面两组）。
+ * 如果把它放进这一组无条件隐藏，后面的"空闲"规则就只能改 transition、
+ * 改不回 visibility —— 结果控制条永远淡不回来（这是第一次实现时的真 bug）。
+ * 所以这里只管"永远不出现"的 UI，播放条交给专门的规则。
+ *
+ * 【.info 也要隐藏 —— 这是截图才发现的漏项】
+ * 歌词信息面板（解析提示、offset 调整、文件诊断）也是编辑期工具，
+ * 演示时留在左上角既挡视线又暴露内部状态。
+ * 第一版只写了 topbar/toasts/drawer，截图时它还杵在左上角。
+ */
+.app-shell.is-presenting .topbar,
+.app-shell.is-presenting .info,
+.app-shell.is-presenting .drawer {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--present-fade) cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear var(--present-fade);
+}
+
+.app-shell:not(.is-presenting) .topbar,
+.app-shell:not(.is-presenting) .info,
+.app-shell:not(.is-presenting) .drawer {
+  transition:
+    opacity var(--present-fade) cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+/*
+ * 展示模式下的提示浮层：保持可见，但加一层暗色底以适配深色舞台。
+ *
+ * 【为什么要单独给它深色皮肤】
+ * 提示面板默认用 --ui-panel，它跟随系统亮/暗主题。
+ * 演示时舞台是深色的（这是有意的设计决策，不跟随系统主题），
+ * 浅色主题下会弹出一块刺眼的白色面板。
+ * 这里固定用深色半透明 + 模糊，与控制条同一套语言。
+ */
+.app-shell.is-presenting .toasts {
+  color: #fff;
+}
+
+.app-shell.is-presenting .toasts .toast {
+  border-color: rgb(255 255 255 / 14%);
+  background: rgb(0 0 0 / 62%);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+}
+
+/*
+ * 播放条在展示模式下浮在舞台底部。
+ *
+ * 【pointer-events 的分工】
+ * 外层容器默认 auto（淡入后整条可点）；
+ * 淡出时容器整体 hidden + none，内部的按钮自然也不再命中 ——
+ * 不需要逐个给按钮写 pointer-events（那样漏一个就会留下"隐形可点"的坑）。
+ */
+.app-shell.is-presenting .playerbar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+  /* 浮在歌词之上需要一层遮罩，否则歌词会从控件缝隙里透出来。
+     【为什么不用 --ui-panel】
+     面板色是**跟随系统亮/暗模式**的浅色，在演示用的深色舞台上会变成
+     一条刺眼的白带（截图里就是这样）。展示模式应当"隐入"舞台，
+     所以这里固定用深色半透明 + 模糊，与歌词背景同调。 */
+  border-top-color: rgb(255 255 255 / 12%);
+  background: rgb(0 0 0 / 46%);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  color: #fff;
+}
+
+/* 演示模式下把控件的深色皮肤同步过来（浅色主题下也不该变白） */
+.app-shell.is-presenting .playerbar .btn--ghost,
+.app-shell.is-presenting .playerbar .playerbar__hint,
+.app-shell.is-presenting .playerbar .playerbar__filename,
+.app-shell.is-presenting .playerbar .playerbar__time,
+.app-shell.is-presenting .playerbar .playerbar__rate {
+  color: rgb(255 255 255 / 82%);
+}
+
+.app-shell.is-presenting .playerbar .playerbar__seek-track,
+.app-shell.is-presenting .playerbar .playerbar__volume .playerbar__seek-track {
+  background: rgb(255 255 255 / 16%);
+}
+
+.app-shell.is-presenting .playerbar .playerbar__seek-knob,
+.app-shell.is-presenting .playerbar .playerbar__volume .playerbar__seek-knob {
+  background: #fff;
+}
+
+/*
+ * 两套状态（隐藏 / 显示）必须都**完整**写出
+ * opacity / visibility / pointer-events / transition 四项。
+ * 不能只写其中一部分 —— CSS 是层叠覆盖，不是状态机，
+ * 漏写哪一项，它就会沿用上一条规则的值。
+ */
+.app-shell.is-presenting.is-control-hidden .playerbar {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--control-fade) cubic-bezier(0.4, 0, 1, 1),
+    visibility 0s linear var(--control-fade);
+}
+
+.app-shell.is-presenting:not(.is-control-hidden) .playerbar {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--control-fade) cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+/* 非展示模式：播放条回到正常网格流 */
+.app-shell:not(.is-presenting) .playerbar {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--present-fade) cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0s;
+}
+
+/* 减少动态效果时直接切换，不做淡入淡出 */
+.app-shell.is-presenting.reduce-motion .topbar,
+.app-shell.is-presenting.reduce-motion .info,
+.app-shell.is-presenting.reduce-motion .toasts,
+.app-shell.is-presenting.reduce-motion .drawer,
+.app-shell.is-presenting.is-control-hidden.reduce-motion .playerbar,
+.app-shell.is-presenting:not(.is-control-hidden).reduce-motion .playerbar,
+.app-shell:not(.is-presenting).reduce-motion .playerbar {
+  transition: none;
+}
+
+/* —— 通用控件外观 —— */
+.btn {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel-2);
+  color: var(--ui-text);
+  font-size: var(--ui-font-sm);
+  white-space: nowrap;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ui-accent);
+  background: color-mix(in srgb, var(--ui-accent) 14%, var(--ui-panel-2));
+}
+
+.btn--primary {
+  border-color: transparent;
+  background: var(--ui-accent);
+  color: #fff;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--ui-accent-hover);
+}
+
+.btn--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--ui-panel-2);
+}
+
+.btn--icon {
+  padding: 7px 10px;
+}
+
+@media (pointer: coarse) {
+  /* 移动端：触摸目标不小于 44px（阶段 3 验收项之一） */
+  .btn {
+    min-height: 44px;
+    padding-inline: 16px;
+  }
+}
+
+/* 视觉隐藏但保留给屏幕阅读器 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 细滚动条（设置抽屉用） */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-border) transparent;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--ui-border);
+  background-clip: content-box;
+}

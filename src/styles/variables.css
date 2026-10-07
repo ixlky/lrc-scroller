@@ -1,0 +1,81 @@
+/* ============================================================
+   全局设计变量
+   注意：--lrc-* 这组变量由 JS 运行时注入（见 core/settings.js 的 toCssVars），
+   这里只提供"还没挂载 JS 时"的兜底值，避免首屏闪一下无样式。
+   ============================================================ */
+
+:root {
+  /* —— 歌词可视设置（会被 JS 覆盖）—— */
+  --lrc-font-family: system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --lrc-font-size: 40px;
+  --lrc-font-weight: 600;
+  --lrc-letter-spacing: 0.02em;
+  --lrc-line-height: 1.6;
+  --lrc-active-scale: 1.35;
+  --lrc-color-normal: #9aa4b2;
+  --lrc-color-active: #ffffff;
+  --lrc-bg: #0b0e14;
+  --lrc-align: center;
+  --lrc-pad-top: 35%;
+  --lrc-pad-bottom: 35%;
+  --lrc-max-width: 90%;
+  --lrc-transition: 260ms;
+  --lrc-fade: 180ms;
+
+  /* —— 应用外壳配色（固定，不随用户设置变化）—— */
+  --ui-bg: #0b0e14;
+  --ui-panel: #131822;
+  --ui-panel-2: #1a2130;
+  --ui-border: #263042;
+  --ui-text: #e6ebf2;
+  --ui-text-dim: #8b97a8;
+  --ui-accent: #4c8dff;
+  --ui-accent-hover: #6ba0ff;
+  --ui-warn: #f0b429;
+  --ui-error: #ff5c5c;
+  --ui-ok: #35c07a;
+
+  --ui-radius: 10px;
+  --ui-radius-sm: 6px;
+  --ui-gap: 12px;
+  --ui-shadow: 0 8px 28px rgb(0 0 0 / 45%);
+
+  --ui-font: system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --ui-font-sm: 13px;
+  --ui-font-xs: 12px;
+
+  --topbar-h: 56px;
+  --playerbar-h: 68px;
+
+  /* 阶段 4 展示模式的过渡时长。
+     --present-fade：进出展示模式时所有 UI 的一次性淡出（较慢，给用户"变化感"）
+     --control-fade：控制条跟随鼠标活动的淡入淡出（较快，高频操作要跟手） */
+  --present-fade: 260ms;
+  --control-fade: 200ms;
+
+  /* 设置抽屉宽度。只在这里定义一次，抽屉自身与"主内容避让"都读它，
+     避免两处各写一个数字导致避让量与实际宽度对不上（需求 N2）。 */
+  --drawer-w: min(360px, 92vw);
+  /* 抽屉打开时主内容左移的量。窄屏下抽屉铺满全屏，此时不该挤压内容，故设为 0 */
+  --drawer-shift: var(--drawer-w);
+}
+
+@media (width <= 640px) {
+  :root {
+    /* 窄屏：抽屉全屏覆盖，主内容不做避让（否则会被压成 0 宽） */
+    --drawer-shift: 0px;
+  }
+}
+
+/* 亮色模式：只影响外壳 UI，不影响歌词舞台（舞台颜色由用户设置决定） */
+@media (prefers-color-scheme: light) {
+  :root {
+    --ui-bg: #f4f6fa;
+    --ui-panel: #ffffff;
+    --ui-panel-2: #eef1f6;
+    --ui-border: #d7dde7;
+    --ui-text: #1b2230;
+    --ui-text-dim: #64708a;
+    --ui-shadow: 0 8px 28px rgb(20 30 50 / 14%);
+  }
+}

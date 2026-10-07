@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+#
+# 【为什么 dist/ 不入库 —— 有一次真实的教训】
+# dist/index.html 是 `pnpm build` 出来的单文件产物。
+# 开发中曾出现"源码已改、dist 还是旧的"，用户打开 dist 后
+# 以为新功能没做（实际是构建产物过期）。
+# 入库会让这种不一致更容易发生：改了源码但忘了重新构建，
+# 仓库里的 dist 与 src 就永久错位。
+#
+# 需要"能直接下载使用的 HTML"时，用 GitHub Release 附上产物：
+#   pnpm build
+#   gh release create v0.1.0 dist/index.html
+dist/
+dist-multi/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.tmp
+*.bak
+
+# 测试脚本产生的临时目录（scripts/e2e-*.mjs 会写盘）
+.tmp/
+e2e-out/

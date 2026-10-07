@@ -1,0 +1,65 @@
+/* ============================================================
+   过渡与动画
+   关键约束：尊重系统"减少动态效果"设置。
+   用户开了该选项时，一切过渡直接归零，功能不受影响（阶段 3 验收项 10）。
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* 不用 0.01ms 那种假关闭，直接 0 更可预测 */
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 应用自身开关（设置面板里的 reduceMotion），与系统设置取并集 */
+.reduce-motion,
+.reduce-motion * {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+/* 设置抽屉的滑入滑出 */
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
+}
+
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
+}
+
+/* 提示消息 */
+.toast-enter-active,
+.toast-leave-active {
+  transition: transform 200ms ease, opacity 200ms ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  transform: translateY(8px);
+  opacity: 0;
+}
+
+/* 加载态脉冲 */
+@keyframes lrc-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.is-loading {
+  animation: lrc-pulse 1.2s ease-in-out infinite;
+}
