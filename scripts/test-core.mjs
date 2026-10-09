@@ -149,6 +149,20 @@ import {
   tutorialKeyAction,
   createTutorialFlags,
 } from '../src/core/tutorial.js'
+import {
+  buildLrcText,
+  buildLrcFileName,
+  summarizeLrcLines,
+  isExportableLine,
+  sanitizeMetaValue,
+  sanitizeLineText,
+  buildMetaTags,
+  stripKnownExtension,
+  sanitizeBaseName,
+  DEFAULT_LRC_BASE,
+  LRC_EXT,
+  MAX_BASE_LENGTH,
+} from '../src/core/lrcWriter.js'
 
 let passed = 0
 let failed = 0
@@ -3771,6 +3785,517 @@ test('resolveFontFamily：名字内含引号时如实反映当前行为（不静
    * 那种情况下 font-family 解析会失败并自然回退到后面的回退字体，可接受。
    */
   assert.equal(resolveFontFamily({ font: { family: 'A', customFamily: 'We"ird' } }), '"We"ird", A')
+})
+
+// ─────────────────────────────────────────────
+group('lrcWriter · 生成 LRC 文本（导出）')
+
+test('buildLrcText：单行格式为 [mm:ss.cc]正文', () => {
+  const out = buildLrcText([{ t: 12.35, text: '第一句歌词' }], { includeMeta: false })
+  assert.equal(out, '[00:12.35]第一句歌词')
+})
+
+test('buildLrcText：多行保持传入顺序（不重排）', () => {
+  const lines = [
+    { t: 12.35, text: '第一句歌词' },
+    { t: 16.8, text: '第二句歌词' },
+    { t: 3.05, text: '时间更早但在后面' },
+  ]
+  const out = buildLrcText(lines, { includeMeta: false })
+  assert.deepEqual(out.split('\n'), [
+    '[00:12.35]第一句歌词',
+    '[00:16.80]第二句歌词',
+    '[00:03.05]时间更早但在后面',
+  ])
+})
+
+test('buildLrcText：跨分钟时间正确（01:05.00 而非 00:65.00）', () => {
+  const out = buildLrcText([{ t: 65, text: '跨分钟' }], { includeMeta: false })
+  assert.equal(out, '[01:05.00]跨分钟')
+})
+
+test('buildLrcText：超过 10 分钟仍是两位数分钟并继续增长', () => {
+  assert.equal(buildLrcText([{ t: 600, text: 'x' }], { includeMeta: false }), '[10:00.00]x')
+  assert.equal(buildLrcText([{ t: 3725.5, text: 'x' }], { includeMeta: false }), '[62:05.50]x')
+})
+
+test('buildLrcText：小数四舍五入并正确进位（59.999 → 01:00.00）', () => {
+  const out = buildLrcText([{ t: 59.999, text: '进位' }], { includeMeta: false })
+  assert.equal(out, '[01:00.00]进位')
+})
+
+test('buildLrcText：中文内容原样保留（不转义、不丢字）', () => {
+  const text = '我爱你，中国！——「测试」·标点'
+  const out = buildLrcText([{ t: 1, text }], { includeMeta: false })
+  assert.ok(out.endsWith(text), `中文应原样输出，实际 ${out}`)
+})
+
+test('buildLrcText：空行（间奏）保留时间标签但无正文', () => {
+  const out = buildLrcText([{ t: 50, text: '', empty: true }], { includeMeta: false })
+  assert.equal(out, '[00:50.00]', '空行应保留时间标签，否则 round-trip 会少一行')
+})
+
+test('buildLrcText：空歌词返回空串（不产生只有换行的文件）', () => {
+  assert.equal(buildLrcText([], { includeMeta: false }), '')
+  assert.equal(buildLrcText(null, { includeMeta: false }), '')
+  assert.equal(buildLrcText(undefined, { includeMeta: false }), '')
+})
+
+test('buildLrcText：无效时间的行被跳过，不影响其他行', () => {
+  const lines = [
+    { t: 1, text: '正常' },
+    { t: NaN, text: 'NaN 时间' },
+    { t: Infinity, text: '无穷时间' },
+    { t: 'abc', text: '非数字时间' },
+    { t: null, text: 'null 时间' },
+    { t: undefined, text: 'undefined 时间' },
+    { t: 2, text: '也正常' },
+  ]
+  const out = buildLrcText(lines, { includeMeta: false })
+  assert.deepEqual(out.split('\n'), ['[00:01.00]正常', '[00:02.00]也正常'])
+})
+
+test('buildLrcText：负时间被夹到 0（formatTimeTag 的行为）', () => {
+  // 解析器已保证 t >= 0，这里只固化"即使传负值也不会写出畸形标签"
+  const out = buildLrcText([{ t: -5, text: '负时间' }], { includeMeta: false })
+  assert.equal(out, '[00:00.00]负时间')
+})
+
+test('buildLrcText：正文里的换行被替换成空格（避免劈成无标签的散行）', () => {
+  const out = buildLrcText([{ t: 1, text: '前半\n后半' }], { includeMeta: false })
+  assert.equal(out, '[00:01.00]前半 后半')
+  assert.equal(out.split('\n').length, 1, '不得把一行劈成两行')
+})
+
+test('buildLrcText：正文首尾空白被清理', () => {
+  const out = buildLrcText([{ t: 1, text: '  有空白  ' }], { includeMeta: false })
+  assert.equal(out, '[00:01.00]有空白')
+})
+
+test('buildLrcText：元数据按 ti/ar/al/by 顺序输出', () => {
+  const out = buildLrcText([{ t: 1, text: '正文' }], {
+    meta: { title: '示例歌曲', artist: '歌手', album: '专辑', by: '某人' },
+  })
+  const rows = out.split('\n')
+  assert.deepEqual(rows.slice(0, 4), ['[ti:示例歌曲]', '[ar:歌手]', '[al:专辑]', '[by:某人]'])
+  assert.equal(rows[4], '[00:01.00]正文')
+})
+
+test('buildLrcText：空元数据不产生空标签行', () => {
+  const out = buildLrcText([{ t: 1, text: 'x' }], { meta: { title: '', artist: '' } })
+  assert.ok(!out.includes('[ti:]'), '不该写出空的 ti 标签')
+  assert.ok(!out.includes('[ar:]'))
+})
+
+test('buildLrcText：元数据里的换行与方括号被清理（否则会破坏标签结构）', () => {
+  const out = buildLrcText([{ t: 1, text: 'x' }], { meta: { title: '标题\n带有]括号[' } })
+  const first = out.split('\n')[0]
+  assert.equal(first, '[ti:标题 带有括号]', `实际 ${first}`)
+  assert.equal(out.split('\n').filter((l) => l.startsWith('[ti:')).length, 1, 'ti 只能有一行')
+})
+
+test('buildLrcText：未知标签（re/ve）原样保留', () => {
+  const out = buildLrcText([{ t: 1, text: 'x' }], { meta: { raw: { re: '编辑者', ve: '1.0' } } })
+  assert.ok(out.includes('[re:编辑者]'), out)
+  assert.ok(out.includes('[ve:1.0]'), out)
+})
+
+test('buildLrcText：length 标签被保留为时间格式', () => {
+  const out = buildLrcText([{ t: 1, text: 'x' }], { meta: { length: 185.5 } })
+  assert.ok(out.includes('[length:03:05.50]'), out)
+})
+
+test('buildLrcText：绝不写出 [offset:]（否则重新导入会二次偏移）', () => {
+  /*
+   * 这是本功能最关键的一条不变量。
+   * 解析器的规则是 t = rawT - offsetMs/1000。
+   * 导出写的是最终时间 t（已含 offset），若再带上 [offset:500]，
+   * 重新导入时会被**再减一次**，整首歌偏移翻倍且没有任何报错。
+   */
+  const out = buildLrcText([{ t: 12.35, text: 'x' }], {
+    meta: { title: 'T', raw: { offset: '500' } },
+  })
+  assert.ok(!/\[offset:/i.test(out), `不得写出 offset 标签，实际：${out}`)
+})
+
+test('buildLrcText：includeMeta=false 时只输出歌词行', () => {
+  const out = buildLrcText([{ t: 1, text: 'x' }], { meta: { title: 'T' }, includeMeta: false })
+  assert.equal(out, '[00:01.00]x')
+})
+
+test('buildLrcText：精度 3 位小数可用', () => {
+  const out = buildLrcText([{ t: 1.234, text: 'x' }], { includeMeta: false, precision: 3 })
+  assert.equal(out, '[00:01.234]x')
+})
+
+test('buildLrcText：纯读操作（不修改传入的数组与行对象）', () => {
+  const line = { t: 1.005, text: '  原文  ', empty: false }
+  const lines = [line]
+  const before = JSON.stringify(lines)
+  buildLrcText(lines, { meta: { title: 'T' } })
+  assert.equal(JSON.stringify(lines), before, '导出不得修改传入数据')
+  assert.equal(line.text, '  原文  ', '行对象必须保持原样')
+})
+
+// ─────────────────────────────────────────────
+group('lrcWriter · 可导出行统计')
+
+test('summarizeLrcLines：分别统计可导出与将被跳过的行', () => {
+  const r = summarizeLrcLines([{ t: 1 }, { t: NaN }, { t: 2 }, { t: null }])
+  assert.equal(r.exportable, 2)
+  assert.equal(r.skipped, 2)
+})
+
+test('summarizeLrcLines：全部有效时 skipped 为 0', () => {
+  const r = summarizeLrcLines([{ t: 0 }, { t: 1.5 }])
+  assert.deepEqual(r, { exportable: 2, skipped: 0 })
+})
+
+test('summarizeLrcLines：空/非数组输入安全', () => {
+  assert.deepEqual(summarizeLrcLines([]), { exportable: 0, skipped: 0 })
+  assert.deepEqual(summarizeLrcLines(null), { exportable: 0, skipped: 0 })
+  assert.deepEqual(summarizeLrcLines(undefined), { exportable: 0, skipped: 0 })
+})
+
+test('isExportableLine：只认有限数字，空行也算可导出', () => {
+  assert.equal(isExportableLine({ t: 0 }), true)
+  assert.equal(isExportableLine({ t: 12.5 }), true)
+  assert.equal(isExportableLine({ t: 0, text: '', empty: true }), true, '空行（间奏）也要导出')
+  assert.equal(isExportableLine({ t: NaN }), false)
+  assert.equal(isExportableLine({ t: Infinity }), false)
+  assert.equal(isExportableLine({}), false)
+  assert.equal(isExportableLine(null), false)
+  assert.equal(isExportableLine('x'), false)
+})
+
+test('isExportableLine：null / 空串 / false 不得被当成 0 秒（Number() 强转陷阱）', () => {
+  /*
+   * 这是一次真实 bug 的回归用例。
+   * `Number(null)`、`Number('')`、`Number(false)` 全都等于 0，
+   * 用 Number() 强转判断会把"没有时间"的行**静默当成 0 秒**导出 ——
+   * 文件开头凭空多出一行，用户完全不知道发生了什么。
+   * 必须显式分类型判断。
+   */
+  for (const bad of [null, undefined, '', '   ', false, true, {}, []]) {
+    assert.equal(
+      isExportableLine({ t: bad }),
+      false,
+      `t=${JSON.stringify(bad)} 不应被视为可导出`,
+    )
+  }
+})
+
+test('isExportableLine：容忍数字字符串（"12.5" 可导出）', () => {
+  assert.equal(isExportableLine({ t: '12.5' }), true)
+  assert.equal(isExportableLine({ t: 'abc' }), false)
+})
+
+test('buildLrcText：t 为 null/空串/false 的行被跳过（不会变成 00:00.00）', () => {
+  const out = buildLrcText(
+    [
+      { t: 5, text: '正常' },
+      { t: null, text: 'null' },
+      { t: '', text: '空串' },
+      { t: false, text: 'false' },
+    ],
+    { includeMeta: false },
+  )
+  assert.equal(out, '[00:05.00]正常', `不该把脏值当 0 秒，实际：${out}`)
+})
+
+// ─────────────────────────────────────────────
+group('lrcWriter · 导出文件名')
+
+test('buildLrcFileName：优先用歌曲标题', () => {
+  assert.equal(
+    buildLrcFileName({ title: '示例歌曲', audioFileName: 'song.mp3' }),
+    '示例歌曲.lrc',
+  )
+})
+
+test('buildLrcFileName：没有标题时用音频文件名（并去掉原扩展名）', () => {
+  assert.equal(buildLrcFileName({ title: '', audioFileName: '我的歌.mp3' }), '我的歌.lrc')
+})
+
+test('buildLrcFileName：都没有时回落 lyrics.lrc', () => {
+  assert.equal(buildLrcFileName({}), 'lyrics.lrc')
+  assert.equal(buildLrcFileName({ title: '  ', audioFileName: '' }), 'lyrics.lrc')
+})
+
+test('buildLrcFileName：不产生重复扩展名（标题自带 .lrc 时）', () => {
+  assert.equal(buildLrcFileName({ title: '示例歌曲.lrc' }), '示例歌曲.lrc')
+  assert.equal(buildLrcFileName({ audioFileName: 'song.mp3' }), 'song.lrc')
+})
+
+test('buildLrcFileName：歌名里的点号不被误当扩展名', () => {
+  // 只剥"已知的"扩展名，所以 Hello.World / Op.10 里的点会保留
+  assert.equal(buildLrcFileName({ title: 'Hello.World' }), 'Hello.World.lrc')
+  assert.equal(buildLrcFileName({ title: 'Op.10 No.3' }), 'Op.10 No.3.lrc')
+})
+
+test('buildLrcFileName：非法字符被替换（Windows 无法保存的名字）', () => {
+  const out = buildLrcFileName({ title: 'a/b\\c:d*e?f"g<h>i|j' })
+  assert.equal(out, 'a_b_c_d_e_f_g_h_i_j.lrc')
+  assert.ok(!/[\\/:*?"<>|]/.test(out), `不该含非法字符：${out}`)
+})
+
+test('buildLrcFileName：控制字符被清理', () => {
+  const out = buildLrcFileName({ title: 'a\u0000b\u001fc' })
+  assert.equal(out, 'a_b_c.lrc')
+})
+
+test('buildLrcFileName：结尾的点与空格被去掉（Windows 会静默丢弃）', () => {
+  assert.equal(buildLrcFileName({ title: '歌名...' }), '歌名.lrc')
+  assert.equal(buildLrcFileName({ title: '歌名   ' }), '歌名.lrc')
+})
+
+test('buildLrcFileName：Windows 保留设备名被避开', () => {
+  assert.equal(buildLrcFileName({ title: 'CON' }), 'CON_.lrc')
+  assert.equal(buildLrcFileName({ title: 'nul' }), 'nul_.lrc')
+  assert.equal(buildLrcFileName({ title: 'COM1' }), 'COM1_.lrc')
+  // 含保留名但不是保留名的要原样保留
+  assert.equal(buildLrcFileName({ title: 'CONCERT' }), 'CONCERT.lrc')
+})
+
+test('buildLrcFileName：超长标题被截断且仍以 .lrc 结尾', () => {
+  const out = buildLrcFileName({ title: '长'.repeat(200) })
+  assert.ok(out.endsWith('.lrc'))
+  assert.ok([...out].length <= MAX_BASE_LENGTH + LRC_EXT.length, `过长：${[...out].length}`)
+})
+
+test('buildLrcFileName：全非法字符时回落 lyrics.lrc', () => {
+  assert.equal(buildLrcFileName({ title: '///' }), 'lyrics.lrc')
+  assert.equal(buildLrcFileName({ title: '...' }), 'lyrics.lrc')
+})
+
+// ─────────────────────────────────────────────
+group('lrcWriter · round-trip（导出的文件必须能被解析器读回）')
+
+test('round-trip：导出的 LRC 重新导入后时间与文本完全一致', () => {
+  const original = [
+    { t: 0, text: '欢迎使用', empty: false },
+    { t: 3.5, text: '这是示例', empty: false },
+    { t: 65.25, text: '跨分钟的一句', empty: false },
+    { t: 90, text: '', empty: true },
+    { t: 125.99, text: '结束', empty: false },
+  ]
+  const text = buildLrcText(original, { meta: { title: '往返测试', artist: '歌手' }, includeMeta: true })
+  const doc = parseLrc(text, { encoding: 'utf-8' })
+
+  assert.equal(doc.lines.length, original.length, '行数必须一致')
+  for (let i = 0; i < original.length; i++) {
+    assert.ok(
+      Math.abs(doc.lines[i].t - original[i].t) < 0.005,
+      `第 ${i} 行时间 ${doc.lines[i].t} vs ${original[i].t}`,
+    )
+    assert.equal(doc.lines[i].text, original[i].text, `第 ${i} 行文本应一致`)
+    assert.equal(doc.lines[i].empty, original[i].empty, `第 ${i} 行 empty 标记应一致`)
+  }
+  assert.equal(doc.meta.title, '往返测试')
+  assert.equal(doc.meta.artist, '歌手')
+})
+
+test('round-trip：导出不含 offset，重新导入不会二次偏移', () => {
+  /*
+   * 模拟"用户把 offset 调成 +500ms 后导出"的场景：
+   * 此时 lines[].t 已经是最终时间（rawT - 0.5）。
+   * 导出的文件里不能再带 offset，否则重新导入会再减一次。
+   */
+  const withOffsetApplied = [
+    { t: 11.5, rawT: 12, text: '第一句', empty: false },
+    { t: 15.5, rawT: 16, text: '第二句', empty: false },
+  ]
+  const text = buildLrcText(withOffsetApplied, { meta: { title: 'T', offsetMs: 500 }, includeMeta: true })
+  const doc = parseLrc(text, { encoding: 'utf-8' })
+
+  assert.equal(doc.meta.offsetMs, 0, '导出文件里不应有 offset')
+  assert.ok(Math.abs(doc.lines[0].t - 11.5) < 0.005, `重新导入后应仍是 11.5，实际 ${doc.lines[0].t}`)
+  assert.ok(Math.abs(doc.lines[1].t - 15.5) < 0.005)
+})
+
+test('round-trip：中文与标点经导出再导入不丢字', () => {
+  const text = '我爱你，中国！——「测试」·标点（括号）'
+  const out = buildLrcText([{ t: 1.23, text, empty: false }], { includeMeta: false })
+  const doc = parseLrc(out, { encoding: 'utf-8' })
+  assert.equal(doc.lines.length, 1)
+  assert.equal(doc.lines[0].text, text)
+})
+
+test('round-trip：双语（同时间两行）导出后仍保留两行', () => {
+  const lines = [
+    { t: 5, rawT: 5, text: '原文', empty: false, sourceLine: 1, duplicateOf: [] },
+    { t: 5, rawT: 5, text: 'translation', empty: false, sourceLine: 2, duplicateOf: [] },
+  ]
+  const out = buildLrcText(lines, { includeMeta: false })
+  const doc = parseLrc(out, { encoding: 'utf-8' })
+  assert.equal(doc.lines.length, 2, '同时间两行都要保留')
+  assert.deepEqual(doc.lines.map((l) => l.text).sort(), ['translation', '原文'])
+})
+
+test('round-trip：导出的文件是合法 UTF-8 且不含 BOM', () => {
+  const out = buildLrcText([{ t: 1, text: '中文测试' }], { includeMeta: false })
+  assert.notEqual(out.charCodeAt(0), 0xfeff, '不应带 BOM（会被部分播放器显示成乱码）')
+  // Node 的 Buffer 往返验证：UTF-8 编解码后完全一致
+  const round = Buffer.from(out, 'utf-8').toString('utf-8')
+  assert.equal(round, out)
+})
+
+test('round-trip：空行不会被解析器丢进 droppedLines', () => {
+  const out = buildLrcText(
+    [
+      { t: 1, text: '前', empty: false },
+      { t: 2, text: '', empty: true },
+      { t: 3, text: '后', empty: false },
+    ],
+    { includeMeta: false },
+  )
+  const doc = parseLrc(out, { encoding: 'utf-8' })
+  assert.equal(doc.lines.length, 3)
+  assert.equal(doc.droppedLines.length, 0, '不应有被丢弃的行')
+})
+
+// ─────────────────────────────────────────────
+group('lyricsStore.applyTapped · 两种打轴目标（修复静默丢数据）')
+
+/**
+ * 复刻 lyricsStore.applyTapped 的合并逻辑，便于在 Node 里断言。
+ *
+ * 【为什么要复刻而不是直接 import store】
+ * lyricsStore 是 Pinia store（依赖 vue），core 层单测刻意不引入任何框架。
+ * 这里逐行对应 store 里的实现；浏览器端的真实行为另由 e2e 覆盖。
+ * 修改 store 时**必须同步改这里**，否则测试会失去意义。
+ */
+function applyTappedMirror(store, tapped) {
+  const hasValidTap = (rec) => {
+    if (!rec || typeof rec !== 'object') return false
+    return Number.isFinite(Number(rec.t))
+  }
+  if (!Array.isArray(tapped) || tapped.length === 0) {
+    return { applied: 0, remaining: store.droppedLines.length }
+  }
+  const useDropped = store.droppedLines.length > 0
+  const merged = [...store.lines]
+  const rest = []
+  let applied = 0
+
+  if (useDropped) {
+    for (let i = 0; i < store.droppedLines.length; i++) {
+      const row = store.droppedLines[i]
+      const rec = tapped[i]
+      if (!hasValidTap(rec)) { rest.push(row); continue }
+      merged.push({
+        id: '', t: rec.t, rawT: rec.t, text: row.text, empty: row.text === '',
+        beat: rec.beat ?? null, locked: rec.locked ?? false,
+        sourceLine: row.line, duplicateOf: [],
+      })
+      applied++
+    }
+  } else {
+    for (let i = 0; i < merged.length; i++) {
+      const rec = tapped[i]
+      if (!hasValidTap(rec)) continue
+      merged[i] = { ...merged[i], t: rec.t, rawT: rec.t, beat: rec.beat ?? null, locked: rec.locked ?? false }
+      applied++
+    }
+  }
+
+  merged.sort((a, b) => (a.t - b.t) || (a.sourceLine - b.sourceLine))
+  for (let i = 0; i < merged.length; i++) merged[i].id = `L${i}`
+  store.lines = merged
+  store.droppedLines = rest
+  return { applied, remaining: rest.length }
+}
+
+/** 造一个带时间的歌词行 */
+const timedLine = (t, text, sourceLine) => ({
+  id: '', t, rawT: t, text, empty: false,
+  beat: null, locked: false, sourceLine, duplicateOf: [],
+})
+
+test('纯 LRC（目标 = lines）里重新打轴：不再静默丢弃', () => {
+  /*
+   * 这是一个真实的旧 BUG：applyTapped 只遍历 droppedLines，
+   * 而纯 LRC 文件的打轴目标是 lines（droppedLines 为空）。
+   * 结果用户打完轴点「应用到歌词」提示"已应用 0 行"，时间被悄悄丢掉。
+   */
+  const store = { lines: [timedLine(2, '第 1 句', 1), timedLine(4, '第 2 句', 2)], droppedLines: [] }
+  const r = applyTappedMirror(store, [
+    { t: 1.5, beat: null, locked: false },
+    { t: 3.5, beat: null, locked: false },
+  ])
+  assert.ok(r.applied > 0, `不该丢数据，applied=${r.applied}`)
+  assert.deepEqual(store.lines.map((l) => l.t), [1.5, 3.5])
+})
+
+test('纯 LRC：就地改写时间，不新增行、不动正文', () => {
+  const store = { lines: [timedLine(2, '第 1 句', 1), timedLine(4, '第 2 句', 2)], droppedLines: [] }
+  applyTappedMirror(store, [{ t: 1.5, beat: null, locked: false }, null])
+  assert.equal(store.lines.length, 2, '不应新增行')
+  assert.deepEqual(store.lines.map((l) => l.text), ['第 1 句', '第 2 句'], '正文不得改动')
+  assert.deepEqual(store.lines.map((l) => l.rawT), [1.5, 4], 'rawT 应同步为 t')
+})
+
+test('纯 LRC：改写后按新时间重新排序', () => {
+  const store = { lines: [timedLine(0, 'A', 1), timedLine(10, 'B', 2)], droppedLines: [] }
+  applyTappedMirror(store, [null, { t: 20, beat: null, locked: false }])
+  assert.deepEqual(store.lines.map((l) => l.t), [0, 20])
+  assert.deepEqual(store.lines.map((l) => l.id), ['L0', 'L1'], 'id 应重新连续')
+})
+
+test('纯 TXT（目标 = droppedLines）行为与修复前完全一致', () => {
+  const store = {
+    lines: [],
+    droppedLines: [
+      { line: 1, text: '第 1 句', reason: '' },
+      { line: 2, text: '第 2 句', reason: '' },
+      { line: 3, text: '第 3 句', reason: '' },
+      { line: 4, text: '第 4 句', reason: '' },
+    ],
+  }
+  const r = applyTappedMirror(store, [
+    { t: 2, beat: null, locked: false },
+    { t: 4, beat: null, locked: false },
+    null, null,
+  ])
+  assert.equal(store.lines.length, 2)
+  assert.deepEqual(store.lines.map((l) => l.t), [2, 4])
+  assert.deepEqual(store.lines.map((l) => l.id), ['L0', 'L1'])
+  assert.deepEqual(store.lines.map((l) => l.rawT), [2, 4])
+  assert.deepEqual(store.lines.map((l) => l.text), ['第 1 句', '第 2 句'])
+  assert.deepEqual(store.lines.map((l) => l.sourceLine), [1, 2], '同时间行靠它稳定排序')
+  assert.equal(store.droppedLines.length, 2, '未打的行留下')
+  assert.deepEqual(r, { applied: 2, remaining: 2 })
+})
+
+test('混合文件：只处理 droppedLines，不动已有时间行', () => {
+  const store = {
+    lines: [timedLine(10, '有时间', 1)],
+    droppedLines: [
+      { line: 2, text: '没时间A', reason: '' },
+      { line: 3, text: '没时间B', reason: '' },
+    ],
+  }
+  const r = applyTappedMirror(store, [{ t: 20, beat: null, locked: false }, null])
+  assert.equal(r.applied, 1)
+  assert.equal(store.lines.length, 2)
+  assert.ok(store.lines.some((l) => l.t === 10 && l.text === '有时间'), '原有时间行必须保留')
+  assert.equal(store.droppedLines.length, 1)
+  assert.equal(store.droppedLines[0].text, '没时间B')
+})
+
+test('脏记录（t 为 NaN）不得写进歌词', () => {
+  const store = { lines: [timedLine(1, 'A', 1), timedLine(2, 'B', 2)], droppedLines: [] }
+  const r = applyTappedMirror(store, [{ t: NaN, beat: null, locked: false }, { t: 9, beat: null, locked: false }])
+  assert.equal(r.applied, 1, 'NaN 记录应被跳过')
+  assert.ok(store.lines.every((l) => Number.isFinite(l.t)), '不能让 NaN 污染时间轴')
+})
+
+test('空 tapped 不改变任何东西', () => {
+  const store = { lines: [timedLine(1, 'A', 1)], droppedLines: [{ line: 2, text: 'B', reason: '' }] }
+  const r = applyTappedMirror(store, [])
+  assert.equal(r.applied, 0)
+  assert.equal(store.lines.length, 1, 'lines 不变')
+  assert.equal(store.droppedLines.length, 1, 'droppedLines 不变')
 })
 
 // ─────────────────────────────────────────────

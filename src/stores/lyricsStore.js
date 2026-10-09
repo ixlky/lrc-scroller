@@ -165,8 +165,18 @@ export const useLyricsStore = defineStore('lyrics', {
     /**
      * 把打轴草稿合并进歌词（阶段 5 的应用出口）。
      *
-     * droppedLines 与 tapped 下标一一对应：打了时间的生成新行，
-     * 没打的留着继续当"无时间行"。
+     * 【两种目标，两套处理 —— 修复一个静默丢数据的真实 BUG】
+     * 打轴的目标是二选一的（与 tappingStore.tapTarget 同一判据）：
+     *   - droppedLines 非空 → 目标是**无时间的行**，打轴是"给它们补时间"
+     *   - droppedLines 为空 → 目标是 **lines 本身**，打轴是"改已有行的时间"
+     *
+     * 旧实现只遍历 droppedLines，于是在纯 LRC（droppedLines 为空）里打轴后
+     * 点「应用到歌词」会提示"已应用 0 行"、**用户打的时间被静默丢弃** ——
+     * 不报错、不提示，最难发现的那类问题。
+     *
+     * 【为什么用 droppedLines.length 判断，而不是接收参数】
+     * 与 tappingStore 的 tapTarget 判据必须完全一致，否则 tapped 的下标会
+     * 对到错误的数组上（张冠李戴）。两处都从同一个状态推导，才不会走偏。
      *
      * 【新行为什么要带 sourceLine】
      * 排序是 `(t, sourceLine)`。新行缺 sourceLine 时 undefined 参与减法得 NaN，
@@ -185,30 +195,52 @@ export const useLyricsStore = defineStore('lyrics', {
         return { applied: 0, remaining: this.droppedLines.length }
       }
 
+      const useDropped = this.droppedLines.length > 0
+
+      /** @type {Array<any>} */
       const merged = [...this.lines]
       /** @type {Array<{line:number,text:string,reason:string}>} */
       const rest = []
       let applied = 0
 
-      for (let i = 0; i < this.droppedLines.length; i++) {
-        const row = this.droppedLines[i]
-        const rec = tapped[i]
-        if (!rec) {
-          rest.push(row)
-          continue
+      if (useDropped) {
+        // ── 目标是无时间的行：打了时间的生成新行，没打的留作"无时间行" ──
+        for (let i = 0; i < this.droppedLines.length; i++) {
+          const row = this.droppedLines[i]
+          const rec = tapped[i]
+          if (!this._hasValidTap(rec)) {
+            // 没打（或时间无效）→ 继续留在无时间行里
+            rest.push(row)
+            continue
+          }
+          merged.push({
+            id: '',
+            t: rec.t,
+            rawT: rec.t,
+            text: row.text,
+            empty: row.text === '',
+            beat: rec.beat ?? null,
+            locked: rec.locked ?? false,
+            sourceLine: row.line,
+            duplicateOf: [],
+          })
+          applied++
         }
-        merged.push({
-          id: '',
-          t: rec.t,
-          rawT: rec.t,
-          text: row.text,
-          empty: row.text === '',
-          beat: rec.beat ?? null,
-          locked: rec.locked ?? false,
-          sourceLine: row.line,
-          duplicateOf: [],
-        })
-        applied++
+      } else {
+        // ── 目标是 lines 本身：就地改写被打的行的**时间**（正文与行序不动）──
+        for (let i = 0; i < merged.length; i++) {
+          const rec = tapped[i]
+          if (!this._hasValidTap(rec)) continue
+          const line = merged[i]
+          merged[i] = {
+            ...line,
+            t: rec.t,
+            rawT: rec.t,
+            beat: rec.beat ?? null,
+            locked: rec.locked ?? false,
+          }
+          applied++
+        }
       }
 
       merged.sort((a, b) => (a.t - b.t) || (a.sourceLine - b.sourceLine))
@@ -220,6 +252,21 @@ export const useLyricsStore = defineStore('lyrics', {
       // 合并后可能出现重复时间，警告要跟着更新
       this.refreshWarnings()
       return { applied, remaining: rest.length }
+    },
+
+    /**
+     * 打轴记录是否可用（有时间、且时间是有限数）。
+     *
+     * 【为什么不能用 `if (!rec)` 判断】
+     * 那只挡掉了"没打"（null），挡不住 `{t: NaN}` 这种脏记录 ——
+     * 会让 NaN 流进 lines[].t，之后滚动、导出、排序全部失效。
+     *
+     * @param {{t?:unknown}|null|undefined} rec
+     * @returns {boolean}
+     */
+    _hasValidTap(rec) {
+      if (!rec || typeof rec !== 'object') return false
+      return Number.isFinite(Number(/** @type {any} */ (rec).t))
     },
 
     /**

@@ -156,9 +156,17 @@ const preview = computed(() => lyrics.lines.slice(0, 6))
         </dl>
       </div>
 
-      <button class="btn btn--ghost info__demo" type="button" @click="lyrics.loadDemo()">
-        恢复为内置示例歌词
-      </button>
+      <!--
+        歌词操作区。
+        「恢复为内置示例歌词」必须**始终可用** —— 歌词清空后正是需要它的场景，
+        所以它不能跟着别的按钮一起被 v-if 掉。
+        （「导出 LRC」已移到导出面板，与「导出视频」并排。）
+      -->
+      <div class="info__actions">
+        <button class="btn btn--ghost info__demo" type="button" @click="lyrics.loadDemo()">
+          恢复为内置示例歌词
+        </button>
+      </div>
     </div>
   </section>
 </template>
@@ -438,7 +446,21 @@ const preview = computed(() => lyrics.lines.slice(0, 6))
 }
 
 .info__demo {
-  margin-top: 8px;
+  margin-top: 0;
+  font-size: 11px;
+}
+
+/* 导出区：按钮与示例按钮并排 */
+.info__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--ui-border);
+}
+
+.info__actions .btn {
   font-size: 11px;
 }
 

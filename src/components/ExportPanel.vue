@@ -1,8 +1,13 @@
 <script setup>
 /**
- * 视频导出面板（渲染 + 编码 + 下载 + 兼容性提示）。
+ * 导出面板：歌词导出（LRC）+ 视频导出（渲染 / 编码 / 下载 / 兼容性提示）。
  *
- * 产出无声 .mp4 —— 不含音频轨，音频由用户在自己的剪辑软件里对齐。
+ * 【两个导出入口并排】
+ * 「导出 LRC」与「导出视频」放在同一行，用户不必在两个地方找"导出"。
+ *   - 导出 LRC：把**已应用**的歌词写成 .lrc 文件（纯文本，瞬间完成）
+ *   - 导出视频：渲染 + 编码 + 封装成无声 MP4
+ *
+ * 产出的 MP4 **不含音频轨** —— 音频由用户在自己的剪辑软件里对齐。
  * 「渲染当前帧」/「渲染全部帧」是预览（只画不编码），「导出视频」才真的产出文件。
  *
  * 【分辨率与帧率由用户选】
@@ -12,12 +17,33 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useLyricsStore } from '@/stores/lyricsStore'
 import { useVideoExportShared, DEFAULT_FPS } from '@/composables/useVideoExport'
+import { useLrcExportShared } from '@/composables/useLrcExport'
 import { RESOLUTION_PRESETS, FPS_PRESETS, findResolution } from '@/core/settings'
+import { summarizeLrcLines } from '@/core/lrcWriter'
 
 const player = usePlayerStore()
 const settings = useSettingsStore()
+const lyrics = useLyricsStore()
 const exporter = useVideoExportShared()
+
+/**
+ * 导出 LRC（与「导出视频」并排）。
+ *
+ * 【为什么放在这里而不是歌词信息面板】
+ * 两个导出入口并排，用户不用在两个地方找"导出"。
+ * 这个 composable 只读已应用的歌词 —— 不碰打轴草稿、不改任何状态；
+ * 有未应用草稿时它会提示用户先去点「应用到歌词」。
+ */
+const lrcExport = useLrcExportShared()
+
+/**
+ * 可导出行数：用 core/lrcWriter 的同一个判据，避免这里另写一套"什么算有效行"。
+ * 为 0 时按钮禁用（不下载空文件）。
+ */
+const lrcStats = computed(() => summarizeLrcLines(lyrics.lines))
+const canExportLrc = computed(() => lrcStats.value.exportable > 0)
 
 /** 预览画布。尺寸由用户选的分辨率决定 */
 const canvasRef = ref(/** @type {HTMLCanvasElement|null} */ (null))
@@ -217,20 +243,65 @@ function onCancel() {
       ——画面按预览舞台等比缩放，动效、行距、字距、字体与配色都与预览一致。
     </p>
 
+    <!--
+      按钮分两组：
+        预览组（渲染当前帧 / 渲染全部帧）—— 只看不下载
+        导出组（导出视频 / 导出 LRC）—— 真正产出文件，并排放
+
+      【为什么要分组而不是排成一行】
+      抽屉宽 360px，四个按钮加起来约 380px 放不下，会自动折到第二行。
+      折行后「导出 LRC」跑到「渲染当前帧」下面，与「导出视频」被隔开 ——
+      而这两个恰恰是用户要找的同一类动作。
+      用 nowrap 的子容器把"导出组"绑定在一起，
+      折行时它俩作为一个整体换行，永远相邻。
+    -->
     <div class="export-panel__row">
       <button class="btn" type="button" :disabled="rendering" @click="onRenderFrame">渲染当前帧</button>
       <button class="btn" type="button" :disabled="rendering" @click="onRenderAll">渲染全部帧</button>
-      <button
-        class="btn btn--primary"
-        type="button"
-        data-tour="export-video"
-        :disabled="rendering || codecState === 'unsupported' || codecState === 'probing'"
-        @click="onExportVideo"
-      >
-        {{ exporting ? '导出中…' : '导出视频' }}
-      </button>
+
+      <!-- 导出组：两个出口紧挨在一起，不与上面的预览按钮拆散 -->
+      <div class="export-panel__group">
+        <button
+          class="btn btn--primary"
+          type="button"
+          data-tour="export-video"
+          :disabled="rendering || codecState === 'unsupported' || codecState === 'probing'"
+          @click="onExportVideo"
+        >
+          {{ exporting ? '导出中…' : '导出视频' }}
+        </button>
+
+        <!--
+          导出 LRC：与「导出视频」并排。
+          只读已应用的歌词；有未应用的打轴草稿时会提示先去应用。
+        -->
+        <button
+          class="btn"
+          type="button"
+          data-tour="export-lrc"
+          :disabled="!canExportLrc"
+          :title="
+            canExportLrc
+              ? `导出 ${lrcStats.exportable} 行歌词为 .lrc 文件`
+              : '当前歌词没有有效的时间，无法导出'
+          "
+          @click="lrcExport.exportLrc()"
+        >
+          导出 LRC
+        </button>
+      </div>
+
       <button v-if="rendering" class="btn" type="button" @click="onCancel">取消</button>
     </div>
+
+    <!--
+      导出的 .lrc 是纯文本，可以直接用记事本改。
+      本应用只能改时间轴（打轴/微调），改不了歌词文字本身，
+      所以这里明确告诉用户"改字要用记事本" —— 否则他会一直在界面里找编辑入口。
+    -->
+    <p class="export-panel__note">
+      如果要编辑 LRC 内的文字，可以自行用记事本打开 .lrc 文件修改。
+    </p>
 
     <!-- 编码不可用时给出明确指引（预览仍可用，所以只禁「导出视频」） -->
     <p v-if="codecState === 'unsupported'" class="export-panel__warn">
@@ -305,6 +376,23 @@ function onCancel() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/*
+ * 导出组：「导出视频」+「导出 LRC」。
+ *
+ * 【为什么要包一层】
+ * 抽屉只有 360px 宽，四个按钮加起来约 380px，必然折行。
+ * 若让它们平铺，折行后「导出 LRC」会被推到下一行、和「导出视频」分开 ——
+ * 而这两个是用户要找的同一类动作（真正产出文件）。
+ * 这一层用 `flex-wrap: nowrap` 把它俩绑成整体：
+ * 折行时一起换行，**永远保持相邻**，间距也与其它按钮一致。
+ */
+.export-panel__group {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .export-panel__progress {
