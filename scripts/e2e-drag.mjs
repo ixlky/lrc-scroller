@@ -159,7 +159,7 @@ async function main() {
   async function reset() {
     await cdp.send('Page.navigate', { url: PAGE_URL })
     await sleep(1200)
-    await cdp.eval(`(() => { try { localStorage.clear(); } catch (e) {} return true; })()`)
+    await cdp.eval(`(() => { try { localStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
     await cdp.send('Page.navigate', { url: PAGE_URL })
     await sleep(2600)
     const dur = await cdp.eval(loadAudio)

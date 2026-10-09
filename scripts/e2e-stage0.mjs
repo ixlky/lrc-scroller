@@ -141,7 +141,7 @@ async function main() {
   // 因为那会在每次导航时都清，会破坏"刷新后设置恢复"这类用例。
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(1200)
-  await cdp.eval(`(() => { try { localStorage.clear(); } catch (e) {} return true; })()`)
+  await cdp.eval(`(() => { try { localStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(2500)
 

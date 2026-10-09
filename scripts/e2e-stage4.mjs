@@ -140,7 +140,7 @@ async function main() {
   })
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(1200)
-  await cdp.eval(`(() => { try { localStorage.clear(); } catch (e) {} return true; })()`)
+  await cdp.eval(`(() => { try { localStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(2600)
 
@@ -313,12 +313,18 @@ async function main() {
     })()`)
 
     const clicked = await cdp.eval(`(() => {
-      const btn = [...document.querySelectorAll('button')].find(b => /演示|退出演示/.test(b.textContent.trim()));
+      /*
+       * 用 data-tour 而不是按钮文案：按钮已从「演示」改名为「全屏」，
+       * 而 data-tour 是专为定位加的稳定属性（见 TopBar.vue 顶部注释）。
+       * 文案会随产品措辞变化，data-tour 不会。
+       */
+      const btn = document.querySelector('[data-tour="fullscreen"]')
+        || [...document.querySelectorAll('button')].find(b => /演示|退出演示|全屏/.test(b.textContent.trim()));
       if (!btn) return false;
       btn.click();
       return true;
     })()`)
-    check('找到并点击「演示」按钮', clicked === true)
+    check('找到并点击「全屏（演示）」按钮', clicked === true)
     await sleep(900)
 
     const s = await fsState()

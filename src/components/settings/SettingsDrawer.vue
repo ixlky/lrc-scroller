@@ -16,6 +16,7 @@ import { makeMessage } from '@/core/errors'
 import ColorPicker from '@/components/settings/ColorPicker.vue'
 import ExportPanel from '@/components/ExportPanel.vue'
 import { useTappingShared } from '@/composables/useTapping'
+import { registerCustomFont, unregisterCustomFont } from '@/core/fontLoader'
 
 const settings = useSettingsStore()
 const ui = useUiStore()
@@ -24,6 +25,65 @@ const tappingAPI = useTappingShared()
 
 const s = computed(() => settings.settings)
 const META = FIELD_META
+
+// ── 自定义字体（会话内）──
+/** 字体加载中：字体文件可能几 MB，加载要几秒，必须给反馈 */
+const fontLoading = ref(false)
+const fontFileRef = ref(/** @type {HTMLInputElement|null} */ (null))
+/** 上传时的原始文件名，仅用于界面显示（字体名是内部生成的唯一名） */
+const fontFileName = ref('')
+
+/** 界面上显示的名字：优先原始文件名，刷新后没有文件名则显示"已上传字体" */
+const customFontLabel = computed(() => fontFileName.value || '已上传字体')
+/** 超过这个大小就提示（但仍允许继续） */
+const FONT_SIZE_WARN_MB = 30
+
+function pickFontFile() {
+  fontFileRef.value?.click()
+}
+
+/** @param {Event} e */
+async function onFontFileChange(e) {
+  const input = /** @type {HTMLInputElement} */ (e.target)
+  const file = input.files?.[0]
+  // 立即清空，否则连续选同一个文件不会触发 change
+  input.value = ''
+  if (!file) return
+
+  if (file.size > FONT_SIZE_WARN_MB * 1024 * 1024) {
+    ui.push({
+      level: 'warn',
+      message: `字体文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB，超过 ${FONT_SIZE_WARN_MB}MB），可能加载缓慢`,
+      hint: '仍会继续加载，请稍候',
+    })
+  }
+
+  fontLoading.value = true
+  try {
+    const family = await registerCustomFont(file)
+    // 换字体前先卸掉上一个，避免同一会话里堆积多个 FontFace
+    const prev = s.value.font.customFamily
+    if (prev && prev !== family) unregisterCustomFont(prev)
+    settings.set('font.customFamily', family)
+    fontFileName.value = file.name
+    ui.push({ level: 'info', message: '自定义字体已生效', hint: `仅本次会话有效：${file.name}` })
+  } catch {
+    ui.push({
+      level: 'error',
+      message: '这个字体文件浏览器无法识别，试试 .ttf 或 .otf 格式',
+      hint: '.ttc 字体包在 Safari / Firefox 上可能不被支持',
+    })
+  } finally {
+    fontLoading.value = false
+  }
+}
+
+function removeCustomFont() {
+  const cur = s.value.font.customFamily
+  if (cur) unregisterCustomFont(cur)
+  settings.set('font.customFamily', '')
+  fontFileName.value = ''
+}
 
 /** 仅在 ?dragdebug=1 时显示的「下载诊断日志」按钮 */
 const showDiagButton = (() => {
@@ -267,6 +327,34 @@ function onOpenTapping() {
               <option v-for="f in FONT_FAMILY_PRESETS" :key="f.value" :value="f.value">{{ f.label }}</option>
             </select>
           </label>
+
+          <!--
+            自定义字体：只在本会话有效，刷新后需重新上传。
+            不做持久化是有意的 —— 中文字体 10~25MB，localStorage 装不下（实测配额 4.75MB），
+            而 IndexedDB 在存储压力下可能被浏览器清除，会给出"存住了却丢了"的错误预期。
+          -->
+          <div class="field">
+            <span class="field__label">自定义字体</span>
+            <input
+              ref="fontFileRef"
+              class="font-upload__input"
+              type="file"
+              accept=".ttf,.otf,.woff,.woff2,.ttc"
+              @change="onFontFileChange"
+            />
+            <div class="font-upload">
+              <button class="btn" type="button" :disabled="fontLoading" @click="pickFontFile">
+                {{ fontLoading ? '加载中…' : '上传字体文件' }}
+              </button>
+              <template v-if="s.font.customFamily">
+                <span class="font-upload__name" :title="s.font.customFamily">{{ customFontLabel }}</span>
+                <button class="btn" type="button" @click="removeCustomFont">移除</button>
+              </template>
+            </div>
+            <p class="font-upload__note">
+              支持 .ttf / .otf / .woff / .woff2 / .ttc，仅本次会话有效（刷新后需重新上传）。
+            </p>
+          </div>
 
           <label class="field">
             <span class="field__label">
@@ -825,5 +913,38 @@ input[type='checkbox'] {
 
 .later .btn {
   font-size: 12px;
+}
+
+/* ── 自定义字体上传 ── */
+.font-upload__input {
+  display: none;
+}
+
+.font-upload {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.font-upload .btn {
+  font-size: 12px;
+}
+
+/* 字体名可能很长（内部名带时间戳），截断并用 title 展示完整值 */
+.font-upload__name {
+  overflow: hidden;
+  max-width: 160px;
+  color: var(--ui-text-dim);
+  font-size: var(--ui-font-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.font-upload__note {
+  margin: 4px 0 0;
+  color: var(--ui-text-dim);
+  font-size: var(--ui-font-xs);
+  line-height: 1.45;
 }
 </style>

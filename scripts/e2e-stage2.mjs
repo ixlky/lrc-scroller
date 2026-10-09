@@ -161,7 +161,7 @@ async function main() {
   await sleep(1200)
   // 设置已持久化：从干净状态开始，避免上次运行的残留影响断言。
   // 只清一次（不用 addScriptToEvaluateOnNewDocument），以免破坏需要保留状态的用例。
-  await cdp.eval(`(() => { try { localStorage.clear(); } catch (e) {} return true; })()`)
+  await cdp.eval(`(() => { try { localStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(2500)
 

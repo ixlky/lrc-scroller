@@ -17,6 +17,15 @@ node_modules/
 dist/
 dist-multi/
 
+# 打包好的构建产物（dist/index.html 的 zip 副本）
+#
+# 同样是产物，不入库。用 Release 分发更合适：
+#   pnpm build
+#   Compress-Archive dist/index.html index.zip
+#   gh release create v0.1.0 index.zip
+index.zip
+*.zip
+
 # 编辑器 / 系统
 .vscode/
 .idea/

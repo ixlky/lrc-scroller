@@ -18,6 +18,16 @@ export function createDefaultSettings() {
 
     font: {
       family: 'system-ui, "PingFang SC", "Microsoft YaHei", sans-serif',
+      /**
+       * 用户上传的自定义字体名（会话内有效）。
+       *
+       * 【为什么单独一个字段，而不是写进 family】
+       * family 会被 sanitizeSettings 按 FONT_FAMILY_PRESETS 白名单清洗，
+       * 上传的字体名不在白名单里会被打回默认值。
+       * 分开存既绕开白名单，也保留了"自定义优先、原字体兜底"的组合能力。
+       * 刷新后会回到 ''（字体本身不持久化，见 core/fontLoader.js）。
+       */
+      customFamily: '',
       size: 40, // px（在 1080p 高度下的基准字号）
       weight: 600,
       letterSpacing: 0.02, // em
@@ -226,6 +236,8 @@ export function sanitizeSettings(raw) {
 
   out.version = SETTINGS_VERSION
   out.font.family = pick(raw, 'font.family', d.font.family)
+  // 自定义字体名不做白名单校验（用户上传的名字无法预知），只要求是非空字符串
+  out.font.customFamily = typeof raw?.font?.customFamily === 'string' ? raw.font.customFamily : d.font.customFamily
   out.font.size = pick(raw, 'font.size', d.font.size)
   out.font.weight = pick(raw, 'font.weight', d.font.weight)
   out.font.letterSpacing = pick(raw, 'font.letterSpacing', d.font.letterSpacing)
@@ -300,6 +312,25 @@ export function normalizeColor(value, fallback) {
 }
 
 /**
+ * 解析最终的 font-family 字符串（自定义优先，原字体兜底）。
+ *
+ * 【为什么单独抽出来】
+ * 有两处消费方：
+ *   1. toCssVars → 预览的 CSS 变量
+ *   2. renderFrame → canvas 的 ctx.font（通过 useVideoExport 传入）
+ * 两边必须是同一个字符串，否则预览和导出会用不同字体。
+ * 收在一处就不会出现"只改了 CSS、忘了 canvas"的偏差。
+ *
+ * @param {Settings} s
+ * @returns {string}
+ */
+export function resolveFontFamily(s) {
+  const custom = typeof s?.font?.customFamily === 'string' ? s.font.customFamily.trim() : ''
+  const base = s?.font?.family || ''
+  return custom ? `"${custom}", ${base}` : base
+}
+
+/**
  * 把设置翻译成 CSS 变量对象（供 :style 绑定）。
  * 好处：改一个设置只触发一次样式重算，且全局所有行共享同一套变量。
  * @param {Settings} s
@@ -309,8 +340,12 @@ export function toCssVars(s) {
   const bgModeColor =
     s.color.bgMode === 'green' ? '#00b140' : s.color.bgMode === 'black' ? '#000000' : s.color.bg
 
+  // 自定义字体优先，原字体作为回退 —— 自定义字体只在会话内存在，
+  // 刷新后名字还在但字体已卸载，后面的 family 能保证仍有可用的字体渲染
+  const fontFamily = resolveFontFamily(s)
+
   return {
-    '--lrc-font-family': s.font.family,
+    '--lrc-font-family': fontFamily,
     '--lrc-font-size': `${s.font.size}px`,
     '--lrc-font-weight': String(s.font.weight),
     '--lrc-letter-spacing': `${s.font.letterSpacing}em`,

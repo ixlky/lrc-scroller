@@ -41,6 +41,7 @@ import { useLyricsStore } from '@/stores/lyricsStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { usePlayerStore } from '@/stores/playerStore'
 import { findLineIndexAt } from '@/core/timeUtils'
+import { resolveFontFamily } from '@/core/settings'
 
 /** 默认帧率（settings.export.fps 缺失或非法时用它） */
 export const DEFAULT_FPS = 30
@@ -134,8 +135,11 @@ export function useVideoExport() {
     if (!probe) return null
 
     const font = settings.settings.font
+    // 用 resolveFontFamily 而不是 font.family：自定义上传的字体要一起参与测量，
+    // 否则算出的换行宽度与实际渲染字体不符，导出的折行位置会偏
+    const familyStr = resolveFontFamily(settings.settings)
     const measure = (s, size) => {
-      probe.font = `${font.weight ?? 400} ${size}px ${font.family ?? 'sans-serif'}`
+      probe.font = `${font.weight ?? 400} ${size}px ${familyStr || 'sans-serif'}`
       const base = probe.measureText(s).width
       const ls = Number(font.letterSpacing)
       if (!Number.isFinite(ls) || ls === 0) return base
@@ -199,14 +203,16 @@ export function useVideoExport() {
     const geo = collectGeometry(canvasEl)
     const lines = lyrics.lines
     const lineIndex = findLineIndexAt(lines, t)
+    // 与 renderAll / exportVideo 一致：让自定义上传的字体也参与这一帧
+    const cfg = withCustomFont(settings.settings)
 
     const layout = geo?.layout
-    const off = layout ? centeringOffsetFor(layout, lineIndex, canvasEl.height, anchorRatio(settings.settings)) : 0
+    const off = layout ? centeringOffsetFor(layout, lineIndex, canvasEl.height, anchorRatio(cfg)) : 0
 
     return renderFrame({
       lineIndex,
       lines,
-      settings: settings.settings,
+      settings: cfg,
       t,
       canvas: canvasEl,
       scrollOffset: off,
@@ -214,6 +220,27 @@ export function useVideoExport() {
       referenceWidth: geo?.refW,
       rowLayout: layout,
     })
+  }
+
+  /**
+   * 把设置里的 font.family 换成"自定义字体优先"的合并字符串。
+   *
+   * 【为什么要这一层】
+   * renderFrame 读的是 `settings.font.family`，而用户上传的字体存在
+   * `font.customFamily` 里（单独一个字段是刻意的：family 会被白名单清洗）。
+   * 不改 renderFrame 的前提下，这里做一次浅合并把两者拼起来，
+   * 让 canvas 也用上自定义字体 —— 否则会出现"预览是新字体、导出是旧字体"
+   * 且**没有任何报错**的静默偏差。
+   *
+   * 返回新对象，不改 store（store.settings 是响应式的，直接改会污染预览状态）。
+   *
+   * @param {any} cfg
+   * @returns {any}
+   */
+  function withCustomFont(cfg) {
+    const merged = resolveFontFamily(cfg)
+    if (!merged || merged === cfg?.font?.family) return cfg
+    return { ...cfg, font: { ...cfg.font, family: merged } }
   }
 
   /**
@@ -236,7 +263,7 @@ export function useVideoExport() {
     const total = Math.max(1, Math.round(duration * fps))
 
     const lines = lyrics.lines
-    const cfg = settings.settings
+    const cfg = withCustomFont(settings.settings)
     const startedAt = performance.now()
 
     // 字体必须先就绪：行高与换行宽度都取决于最终生效的字体
@@ -389,7 +416,7 @@ export function useVideoExport() {
     encoder.configure(encoderConfig)
 
     const lines = lyrics.lines
-    const cfg = settings.settings
+    const cfg = withCustomFont(settings.settings)
     const startedAt = performance.now()
     const microsPerFrame = 1e6 / fps
     const keyframeInterval = Math.max(1, Math.round(fps * KEYFRAME_SECONDS))

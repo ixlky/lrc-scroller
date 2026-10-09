@@ -136,7 +136,7 @@ async function main() {
   const reload = async () => {
     await cdp.send('Page.navigate', { url: PAGE_URL })
     await sleep(1000)
-    await cdp.eval(`(() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} return true; })()`)
+    await cdp.eval(`(() => { try { localStorage.clear(); sessionStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
     await cdp.send('Page.navigate', { url: PAGE_URL })
     await sleep(2800)
     // 兜底：store 是模块级单例，reload 后应已是初始值；再显式 reset 一次求稳

@@ -29,6 +29,7 @@ import {
   FPS_PRESETS,
   findResolution,
   nearestResolutionId,
+  resolveFontFamily,
 } from '../src/core/settings.js'
 import { makeMessage, fromError, CODES } from '../src/core/errors.js'
 import { parseLrc, withOffset, reapplyOffset } from '../src/core/lrcParser.js'
@@ -3701,6 +3702,75 @@ test('首次标记：键名带版本（改版后可重新引导老用户）', ()
   const s = makeFakeStorage()
   createTutorialFlags(s).markSeen()
   assert.ok(s._map.has(TUTORIAL_STORAGE_KEY), '应按约定键名写入')
+})
+
+// ─────────────────────────────────────────────
+group('settings · 自定义字体（预览与导出必须用同一个 family）')
+
+test('resolveFontFamily：没有自定义字体时原样返回 family', () => {
+  assert.equal(resolveFontFamily({ font: { family: 'Arial, sans-serif', customFamily: '' } }), 'Arial, sans-serif')
+})
+
+test('resolveFontFamily：有自定义字体时排在最前（否则不会生效）', () => {
+  const out = resolveFontFamily({ font: { family: 'Arial, sans-serif', customFamily: 'MyFont' } })
+  assert.equal(out, '"MyFont", Arial, sans-serif')
+  assert.ok(out.startsWith('"MyFont"'), '自定义字体必须在最前，否则浏览器会用回退字体')
+})
+
+test('resolveFontFamily：自定义字体是空白时视为没有（不产生空引号）', () => {
+  for (const v of ['', '   ', '\t', '\n']) {
+    assert.equal(resolveFontFamily({ font: { family: 'Arial', customFamily: v } }), 'Arial')
+  }
+})
+
+test('resolveFontFamily：脏输入返回字符串，不产生 undefined/NaN', () => {
+  assert.equal(typeof resolveFontFamily({}), 'string')
+  assert.equal(typeof resolveFontFamily(null), 'string')
+  assert.equal(typeof resolveFontFamily(undefined), 'string')
+  const out = resolveFontFamily({ font: { customFamily: 'X' } })
+  assert.ok(!out.includes('undefined'), `不该出现 undefined：${out}`)
+  assert.ok(!out.includes('NaN'), `不该出现 NaN：${out}`)
+})
+
+test('toCssVars 走 resolveFontFamily（预览侧确实用上自定义字体）', () => {
+  const s = createDefaultSettings()
+  s.font.customFamily = 'LrcCustomFont-1'
+  const vars = toCssVars(s)
+  assert.ok(vars['--lrc-font-family'].includes('LrcCustomFont-1'), vars['--lrc-font-family'])
+  assert.ok(vars['--lrc-font-family'].startsWith('"LrcCustomFont-1"'), '应排在最前')
+  // 回退字体必须保留：刷新后自定义字体已卸载，靠它保证文字仍然可读
+  assert.ok(vars['--lrc-font-family'].includes(s.font.family), '必须保留回退字体')
+})
+
+test('sanitizeSettings：customFamily 默认为空串', () => {
+  assert.equal(createDefaultSettings().font.customFamily, '')
+  assert.equal(sanitizeSettings({}).font.customFamily, '')
+})
+
+test('sanitizeSettings：customFamily 不被字体族白名单清洗（这正是它单独一个字段的原因）', () => {
+  // family 会被 FONT_FAMILY_PRESETS 白名单打回默认值，而用户上传的名字无法预知
+  const s = sanitizeSettings({ font: { customFamily: 'LrcCustomFont-1791519445582' } })
+  assert.equal(s.font.customFamily, 'LrcCustomFont-1791519445582')
+})
+
+test('sanitizeSettings：customFamily 非字符串时回落空串', () => {
+  for (const v of [123, null, {}, [], true]) {
+    assert.equal(
+      sanitizeSettings({ font: { customFamily: v } }).font.customFamily,
+      '',
+      `${JSON.stringify(v)} 应回落空串`,
+    )
+  }
+})
+
+test('resolveFontFamily：名字内含引号时如实反映当前行为（不静默吞掉）', () => {
+  /*
+   * 记录当前行为：名字被原样包进双引号。
+   * 正常路径下这个名字由 registerCustomFont 生成（LrcCustomFont-<时间戳>），
+   * 不含引号；只有手工改 localStorage 才可能写入引号 ——
+   * 那种情况下 font-family 解析会失败并自然回退到后面的回退字体，可接受。
+   */
+  assert.equal(resolveFontFamily({ font: { family: 'A', customFamily: 'We"ird' } }), '"We"ird", A')
 })
 
 // ─────────────────────────────────────────────

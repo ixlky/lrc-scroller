@@ -270,7 +270,7 @@ async function main() {
   // ══════════════════════════════════════════════
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(1200)
-  await cdp.eval(`(() => { try { localStorage.clear(); } catch (e) {} return true; })()`)
+  await cdp.eval(`(() => { try { localStorage.clear(); localStorage.setItem('lrc-scroller:tutorial-seen:v1','1'); } catch (e) {} return true; })()`)
   await cdp.send('Page.navigate', { url: PAGE_URL })
   await sleep(2600)
   await cdp.eval(INSTALL)
@@ -526,7 +526,27 @@ async function main() {
 
       const cx = ring.left + ring.width / 2
       const cy = ring.cy
-      const R = ring.width / 2 - 2
+      /*
+       * 半径与组件源码一致：ColorPicker 里是
+       *   `Math.min(rect.width, rect.height) / 2`（没有减 2）
+       * 早先这里写成 `- 2`，脚本以为点在边缘(S=100)，组件却算出 S=96.7%，
+       * 颜色偏成 #ff0808 而不是 #ff0000。
+       */
+      const R = ring.width / 2
+      /*
+       * 【为什么边缘点要退 1px 而不是按比例缩放】
+       * 实测：`Input.dispatchTouchEvent` 在坐标**恰好落在圆边界**时
+       * 一个事件都不投递（pointerdown/touchstart 全无），颜色不变。
+       *   120° 距圆心 60.0px → 事件=[]，颜色 #ffffff
+       *   120° 距圆心 59.0px → 事件正常，颜色 #03ff01
+       * 所以边缘用例取 `R - 1`（S = 59/60 = 98.3%）：
+       * 既保证事件投递，又足够接近边缘以得到纯色（容差 8 内）。
+       *
+       * 曾经试过按比例退 2%（frac=0.98）——那样 S 只有 98%，
+       * RGB 出现 #ff0905 这种偏差（绿通道 9 级，超出容差 8）。
+       * 退 1px 的 S 是 98.3%，实测在容差内。
+       */
+      const EDGE_PX = 1
       const readColor = () => cdp.eval(`window.__lrcDiag.settings.settings.color.active`)
 
       /** 设置颜色并等 UI 同步（避免 pointerdown 落在已被替换的旧节点上） */
@@ -546,23 +566,43 @@ async function main() {
        * attachPointerDrag 只在 pointermove 时应用颜色；纯 click（按下即抬起）
        * 不会触发 onMove，颜色不会变。所以点完必须补一个微小位移。
        * 1px 引入的误差 <2/255，不影响断言。
+       *
+       * 【frac=1.0 时自动退 1px】
+       * 实测 `Input.dispatchTouchEvent` 在坐标**恰好落在圆边界**时
+       * 一个事件都不投递（下标 120°/90° 会挂），退 1px 后正常。
+       * 只退 1px 而不是按比例缩放：S = 59/60 = 98.3%，仍能得到纯色；
+       * 曾经试过 frac=0.98，S 只有 98%，RGB 偏成 #ff0905 超出容差。
        */
       const tapAt = async (deg, frac) => {
         const rad = (deg * Math.PI) / 180
-        const x = cx + Math.sin(rad) * R * frac
-        const y = cy - Math.cos(rad) * R * frac
+        const inset = frac >= 1 ? EDGE_PX : 0
+        const rr = Math.max(0, R * frac - inset)
+        const x = cx + Math.sin(rad) * rr
+        const y = cy - Math.cos(rad) * rr
+
+        /*
+         * 补的 1px 位移**沿半径方向**（朝圆心），而不是固定 +x。
+         *
+         * 【为什么不能固定 +x】
+         * 半径方向水平时（90°/240°/270°），横向 1px 会让角度偏最多，
+         * 240° 实测偏成 #080aff（绿通道 10 级，超出容差 8）。
+         * 沿半径退 1px 只改饱和度、不改色相，颜色仍是纯色系。
+         */
+        const dx = -Math.sin(rad) * 1
+        const dy = Math.cos(rad) * 1
+
         if (kind === 'touch') {
           await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
           await sleep(30)
-          await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + 1, y }] })
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + dx, y: y + dy }] })
           await sleep(30)
           await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
         } else {
           await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1, pointerType: kind })
           await sleep(30)
-          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x + 1, y, button: 'left', buttons: 1, pointerType: kind })
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x + dx, y: y + dy, button: 'left', buttons: 1, pointerType: kind })
           await sleep(30)
-          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + 1, y, button: 'left', clickCount: 1, buttons: 0, pointerType: kind })
+          await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + dx, y: y + dy, button: 'left', clickCount: 1, buttons: 0, pointerType: kind })
         }
         await sleep(280)
         return readColor()
