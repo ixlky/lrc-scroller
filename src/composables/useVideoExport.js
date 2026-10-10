@@ -47,6 +47,17 @@ import { resolveFontFamily } from '@/core/settings'
 export const DEFAULT_FPS = 30
 
 /**
+ * 导出流水线的阶段标记。
+ *
+ * 【为什么要它】
+ * 进度条走到 100% 之后还有三步（flush / finalize / download）才真正开始下载。
+ * 之前这三步对外完全不可见，用户看到"100% 但没文件"无法判断卡在哪里。
+ * 阶段名只做标记，不改变任何 await 顺序。
+ *
+ * @typedef {'render'|'flush'|'finalize'|'download'} ExportPhase
+ */
+
+/**
  * 视频编码候选，从现代到兜底：
  *   avc1.640028  High 4.0   压缩效率最好
  *   avc1.4D401E  Main 3.0   中间档
@@ -353,7 +364,9 @@ export function useVideoExport() {
    *
    * @param {HTMLCanvasElement|null} canvasEl
    * @param {Object} [opts]
-   * @param {(done:number, total:number)=>void} [opts.onProgress]
+   * @param {(done:number, total:number, phase?:ExportPhase)=>void} [opts.onProgress]
+   *   进度回调。phase 让调用方能区分"进度条 100% 之后卡在哪一步"：
+   *   render（逐帧渲染）→ flush（写入编码器）→ finalize（生成文件）→ download（触发下载）
    * @param {AbortSignal} [opts.signal]
    * @returns {Promise<
    *   {ok:true, frames:number, bytes:number, elapsedMs:number} |
@@ -484,13 +497,14 @@ export function useVideoExport() {
       encoder.encode(frame, { keyFrame: i % keyframeInterval === 0 })
       frame.close()
 
-      onProgress?.(i + 1, total)
+      onProgress?.(i + 1, total, 'render')
 
       // 与 renderAll 一致：setTimeout(0) 而非 rAF（rAF 在后台标签页会暂停）
       await new Promise((r) => setTimeout(r, 0))
     }
 
     // 冲刷编码器：不加这步，最后几帧的 chunk 还没吐出来就被 finalize，会丢帧
+    onProgress?.(total, total, 'flush')
     try {
       await encoder.flush()
     } catch (e) {
@@ -504,6 +518,7 @@ export function useVideoExport() {
 
     if (encoderError) return { ok: false, reason: 'encode-failed', frames: total }
 
+    onProgress?.(total, total, 'finalize')
     muxer.finalize()
     const buffer = muxer.target.buffer
     const blob = new Blob([buffer], { type: 'video/mp4' })
@@ -513,6 +528,7 @@ export function useVideoExport() {
     a.href = url
     a.download = `lrc-${Date.now()}.mp4`
     document.body.appendChild(a)
+    onProgress?.(total, total, 'download')
     a.click()
     a.remove()
     // 延迟回收：立即 revoke 在部分浏览器上会让下载中断

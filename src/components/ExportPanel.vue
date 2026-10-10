@@ -57,6 +57,14 @@ const rendering = ref(false)
 const exporting = ref(false)
 const done = ref(0)
 const total = ref(0)
+/**
+ * 当前阶段：'render' | 'flush' | 'finalize' | 'download' | ''
+ *
+ * 【为什么要显示它】
+ * 进度条到 100% 后还要 flush/finalize/download 三步才真正出现下载。
+ * 只显示"100%"会让用户以为已经结束 —— 卡住时也无从判断卡在哪一步。
+ */
+const phase = ref('')
 const resultText = ref('')
 /** @type {import('vue').Ref<AbortController|null>} */
 const controller = ref(null)
@@ -130,6 +138,26 @@ watch([resolution, fpsi], async () => {
 
 const percent = computed(() => (total.value > 0 ? Math.round((done.value / total.value) * 100) : 0))
 
+/**
+ * 进度行的文案。
+ *
+ * 【为什么非 render 阶段要换文案】
+ * 这三步都在 100% 之后、下载之前，耗时可能是秒级（flush 要等编码器吐完）。
+ * 只显示"100%"用户会以为卡死。写明当前动作，至少能判断卡在哪一步。
+ */
+const progressText = computed(() => {
+  switch (phase.value) {
+    case 'flush':
+      return '正在写入编码器…'
+    case 'finalize':
+      return '正在生成文件…'
+    case 'download':
+      return '正在触发下载…'
+    default:
+      return `${done.value} / ${total.value} 帧（${percent.value}%）`
+  }
+})
+
 function onRenderFrame() {
   syncCanvasSize()
   const ok = exporter.renderPreview(canvasRef.value, player.currentTime)
@@ -142,6 +170,7 @@ async function run(task) {
   rendering.value = true
   done.value = 0
   total.value = 0
+  phase.value = ''
   resultText.value = ''
 
   const ctrl = new AbortController()
@@ -150,6 +179,10 @@ async function run(task) {
   try {
     const r = await task(ctrl.signal)
     resultText.value = describe(r)
+  } catch (e) {
+    // 未捕获的异常（编码器崩、内存不足、a.click 抛错）
+    resultText.value = `导出失败：${e?.message || e?.name || '未知错误'}`
+    console.error('[export] 未捕获异常', e)
   } finally {
     rendering.value = false
     exporting.value = false
@@ -181,9 +214,11 @@ function describe(r) {
 
 const progressOpts = (signal) => ({
   signal,
-  onProgress: (d, tt) => {
+  // renderAll 不发 phase，缺省按 'render' 处理，两种任务共用同一套进度显示
+  onProgress: (d, tt, ph) => {
     done.value = d
     total.value = tt
+    phase.value = ph || 'render'
   },
 })
 
@@ -317,7 +352,7 @@ function onCancel() {
     <template v-if="rendering || total > 0">
       <progress class="export-panel__progress" :value="done" :max="total || 1" />
       <p class="export-panel__note">
-        <template v-if="rendering">{{ done }} / {{ total }} 帧（{{ percent }}%）</template>
+        <template v-if="rendering">{{ progressText }}</template>
         <template v-else>{{ resultText }}</template>
       </p>
     </template>
