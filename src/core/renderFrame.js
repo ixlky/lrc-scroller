@@ -639,11 +639,22 @@ export function renderFrame({
   const align = layoutCfg.align
   const isLeft = align === 'left'
   const isRight = align === 'right'
-  const anchorX = isLeft
+  /*
+   * 锚点 x 必须夹取到画布内。
+   *
+   * stageW 用的是舞台宽（预览宽高比），画布是固定 16:9。当舞台比画布"更宽"
+   * （宽高比 > 画布）时 layoutWidth > W，offsetX = (W - layoutWidth)/2 变负 ——
+   * 左右对齐的锚点会落到画布外，文字被裁掉一半。居中恰好被 layoutWidth/2 抵消，
+   * 所以只有左右对齐暴露。
+   * layoutWidth 本身**不能改**：换行宽度按预览等比才是换行位置正确的关键，
+   * 这里只夹取绘制锚点。
+   */
+  const rawX = isLeft
     ? offsetX + layoutWidth * EDGE_INSET
     : isRight
       ? offsetX + layoutWidth * (1 - EDGE_INSET)
       : offsetX + layoutWidth / 2
+  const anchorX = Math.max(0, Math.min(W, rawX))
 
   ctx.textBaseline = 'middle'
   ctx.textAlign = isLeft ? 'left' : isRight ? 'right' : 'center'

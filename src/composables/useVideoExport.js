@@ -58,17 +58,39 @@ export const DEFAULT_FPS = 30
  */
 
 /**
- * 视频编码候选，从现代到兜底：
- *   avc1.640028  High 4.0   压缩效率最好
- *   avc1.4D401E  Main 3.0   中间档
- *   avc1.42001E  Baseline 3.0  兼容性最广（老设备/软件解码器）
+ * 视频编码候选，按 level 从高到低排列（探测会自动挑第一个支持的）。
+ *   avc1.640034  High 5.2  4K
+ *   avc1.640033  High 5.1  2K60 / 4K30
+ *   avc1.640032  High 5.0  2K30
+ *   avc1.64002A  High 4.2  1080p60
+ *   avc1.640029  High 4.1  1080p60
+ *   avc1.640028  High 4.0  1080p30
+ *   avc1.4D401F  Main 3.1  720p30
+ *   avc1.42001E  Baseline 3.0  兜底（兼容性最广：老设备/软件解码器）
+ *
+ * 【为什么必须按 level 分档，不能只留一个 High 4.0】
+ * codec string 末两位是 level，level 直接决定**单帧像素上限**：
+ * level 4.0 约 2MP，2K(3.69MP) 与 4K(8.29MP) 都超出，
+ * 于是 isConfigSupported 对高分辨率全部返回 false —— 表现就是
+ * "720p/1080p 能导，2K/4K 报无法编码"，与浏览器新旧无关。
+ * 高分辨率必须用高 level 的 codec string。
  *
  * 【为什么要探测而不是写死一个】
  * 各设备的硬件编码器能力不同，实测本机 Edge 支持 High 却**不支持** Baseline，
  * 而老设备可能恰好相反。项目要发给别人用，写死任何一个都会让一部分人导不出。
- * 顺序不能改：High 优先，它的压缩效率最好（画面只有文字，但文件仍小得多）。
+ * 顺序不能改：按 level 从高到低，High 优先（压缩效率最好，画面只有文字但文件仍小得多），
+ * 低 level 与 Baseline 在末尾兜底；对某个分辨率，第一个"既支持又够用"的会被选中。
  */
-export const VIDEO_CODECS = ['avc1.640028', 'avc1.4D401E', 'avc1.42001E']
+export const VIDEO_CODECS = [
+  'avc1.640034', // High 5.2  4K
+  'avc1.640033', // High 5.1  2K60 / 4K30
+  'avc1.640032', // High 5.0  2K30
+  'avc1.64002A', // High 4.2  1080p60
+  'avc1.640029', // High 4.1  1080p60
+  'avc1.640028', // High 4.0  1080p30
+  'avc1.4D401F', // Main 3.1  720p30
+  'avc1.42001E', // Baseline 3.0  兜底
+]
 
 /**
  * 关键帧间隔（帧）。每 30 帧一个（按 30fps 折合 1 秒），方便剪辑软件拖动定位。
