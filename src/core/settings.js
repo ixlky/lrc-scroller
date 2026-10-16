@@ -7,6 +7,7 @@
  *  - CSS 变量映射用它决定哪些字段需要转成 --lrc-*
  *  - 设置面板的滑杆范围也从这里读，避免"UI 能拖到 3，逻辑只认到 1"的错位
  */
+import { hexToHsl, hslToHex } from './color.js'
 
 export const SETTINGS_VERSION = 1
 
@@ -47,6 +48,52 @@ export function createDefaultSettings() {
       tapped: '#4c8dff',
       bg: '#0b0e14',
       bgMode: 'solid', // solid | green | black
+    },
+
+    /**
+     * 文字描边。
+     *
+     * 【width 默认 0 = 关闭，为什么不做成单独的 enabled 开关】
+     * 宽度为 0 时 CSS 与 canvas 天然不画描边，语义已经完整；
+     * 再加一个布尔开关会出现"开着但宽度为 0"这种自相矛盾的状态，
+     * 还要在 UI、校验、导出三处都判断一次。少一个状态就少一类 bug。
+     *
+     * 【默认关闭是为了老用户】
+     * 升级后观感必须零变化，想要描边的人自己拖一下就好。
+     */
+    stroke: {
+      /** 描边粗细，单位 em（相对字号）。0 = 关闭 */
+      width: 0,
+      /** 描边基色，只提供色相与饱和度；明暗由 brightness 决定 */
+      color: '#000000',
+      /**
+       * 「明亮」：描边颜色的明度（0~100）。
+       *
+       * 【为什么是独立一项，而不是让用户直接在色轮上点】
+       * 色轮负责选色相/饱和度，明度由这个滑杆单独控制 ——
+       * 这样"换个颜色"不会把用户调好的明暗带跑，
+       * 想从纯黑描边换成深灰描边也不需要重新找色。
+       */
+      brightness: 0,
+      /**
+       * 描边位置：'outer'（外侧，默认）| 'center'（居中，内外各半）。
+       *
+       * 【为什么没有「内侧」】
+       * CSS 的 -webkit-text-stroke 线宽**永远以字形轮廓为中心**，
+       * 没有任何属性能把描边推到内侧。SVG2 有 stroke-alignment: inner，
+       * 但至今没有浏览器实现 —— 实测 Edge 155 的
+       * CSS.supports('stroke-alignment','inner') 返回 false。
+       * 唯一能"腐蚀"字形的是 SVG 滤镜 feMorphology erode，但它
+       *   1. 会把填充一起吃掉（红色文字会整个消失）
+       *   2. 半径是设备像素、不随字号缩放（与 em 语义冲突）
+       *   3. 与 canvas 的结果对不上（实测绿色区域 IoU 仅 0.38）
+       * 第 3 条直接破坏"导出 = 预览"这个核心契约，所以不做内侧。
+       *
+       * 外侧与居中两种都能在 CSS 与 canvas 上用同一条规则表达，天然一致：
+       *   外侧：先画描边、再用不透明填充盖住内半 → paint-order: stroke fill
+       *   居中：先画填充、再盖描边           → paint-order: fill stroke
+       */
+      position: 'outer',
     },
 
     layout: {
@@ -160,6 +207,9 @@ export const FIELD_META = {
   'font.letterSpacing': { min: -0.1, max: 1, step: 0.01, unit: 'em' },
   'font.lineHeight': { min: 1, max: 4, step: 0.05, unit: '倍' },
   'font.scale': { min: 1, max: 3, step: 0.01, unit: '倍' },
+  // 描边：宽度上限 0.3em —— 再粗就会糊住字形，尤其在小字号下
+  'stroke.width': { min: 0, max: 0.3, step: 0.005, unit: 'em' },
+  'stroke.brightness': { min: 0, max: 100, step: 1, unit: '%' },
   'layout.padTop': { min: 0, max: 0.5, step: 0.01, unit: '' },
   'layout.padBottom': { min: 0, max: 0.5, step: 0.01, unit: '' },
   'layout.maxWidth': { min: 0.3, max: 1, step: 0.01, unit: '' },
@@ -250,6 +300,11 @@ export function sanitizeSettings(raw) {
   out.color.bg = normalizeColor(pick(raw, 'color.bg', d.color.bg), d.color.bg)
   out.color.bgMode = pickEnum(pick(raw, 'color.bgMode', d.color.bgMode), ['solid', 'green', 'black'], d.color.bgMode)
 
+  out.stroke.width = pick(raw, 'stroke.width', d.stroke.width)
+  out.stroke.color = normalizeColor(pick(raw, 'stroke.color', d.stroke.color), d.stroke.color)
+  out.stroke.brightness = pick(raw, 'stroke.brightness', d.stroke.brightness)
+  out.stroke.position = pickEnum(pick(raw, 'stroke.position', d.stroke.position), ['outer', 'center'], d.stroke.position)
+
   out.layout.align = pickEnum(pick(raw, 'layout.align', d.layout.align), ['left', 'center', 'right'], d.layout.align)
   out.layout.padTop = pick(raw, 'layout.padTop', d.layout.padTop)
   out.layout.padBottom = pick(raw, 'layout.padBottom', d.layout.padBottom)
@@ -331,6 +386,38 @@ export function resolveFontFamily(s) {
 }
 
 /**
+ * 解析最终的描边颜色：取用户选色的**色相与饱和度**，明度用「明亮」滑杆。
+ *
+ * 【为什么拆成"色相/饱和度"与"明度"两段】
+ * 这是"颜色 + 明亮"两个设置项的语义分工：
+ *   - 颜色   → 决定是什么色（红/蓝/青…）
+ *   - 明亮   → 决定这个色有多亮（0 = 纯黑，50 = 原色，100 = 纯白）
+ * 若直接用用户选的色值，调「明亮」就得改写色值本身，
+ * 换个颜色又会把用户调好的明暗带跑，两条设置互相打架。
+ *
+ * 【边界行为（与 CSS 的 hsl() 一致）】
+ * HSL 里 s=0 或 l=0/100 时输出灰阶，色相自然"失效"：
+ *   - brightness=0   → #000000（纯黑，无论选了什么色）
+ *   - brightness=100 → #ffffff（纯白）
+ * 这是符合直觉的：把明度拉到底/顶，颜色本来就应该被冲掉。
+ *
+ * 【与预览共用】
+ * toCssVars（预览的 CSS 变量）与 renderFrame（canvas 的 strokeStyle）
+ * 都调这个函数，保证两边是同一个字符串 —— 与 resolveFontFamily 同一套路，
+ * 从根上避免"只改了 CSS、忘了 canvas"。
+ *
+ * @param {Settings} s
+ * @returns {string} #rrggbb
+ */
+export function resolveStrokeColor(s) {
+  const base = normalizeColor(s?.stroke?.color, '#000000')
+  const raw = Number(s?.stroke?.brightness)
+  const l = Number.isFinite(raw) ? Math.min(100, Math.max(0, raw)) : 0
+  const { h, s: sat } = hexToHsl(base)
+  return hslToHex(h, sat, l)
+}
+
+/**
  * 把设置翻译成 CSS 变量对象（供 :style 绑定）。
  * 好处：改一个设置只触发一次样式重算，且全局所有行共享同一套变量。
  * @param {Settings} s
@@ -354,6 +441,16 @@ export function toCssVars(s) {
     '--lrc-color-normal': s.color.normal,
     '--lrc-color-active': s.color.active,
     '--lrc-color-tapped': s.color.tapped,
+    // 描边：宽度是 em 值（相对字号），颜色已经过「明亮」换算
+    '--lrc-stroke-width': `${s.stroke.width}em`,
+    '--lrc-stroke-color': resolveStrokeColor(s),
+    /*
+     * 位置 → paint-order。
+     * outer  = 描边先画、填充盖住内半 → 只留外半
+     * center = 填充先画、描边压在上面 → 内外各半
+     * canvas 侧用同一套顺序（见 renderFrame 的 paint()），两边天然一致。
+     */
+    '--lrc-stroke-order': s.stroke.position === 'center' ? 'fill stroke' : 'stroke fill',
     '--lrc-bg': bgModeColor,
     '--lrc-align': s.layout.align,
     '--lrc-pad-top': `${s.layout.padTop * 100}%`,

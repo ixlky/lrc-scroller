@@ -11,7 +11,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useUiStore } from '@/stores/uiStore'
-import { FONT_FAMILY_PRESETS, FIELD_META, createDefaultSettings } from '@/core/settings'
+import { FONT_FAMILY_PRESETS, FIELD_META, createDefaultSettings, resolveStrokeColor } from '@/core/settings'
 import { makeMessage } from '@/core/errors'
 import ColorPicker from '@/components/settings/ColorPicker.vue'
 import ExportPanel from '@/components/ExportPanel.vue'
@@ -25,6 +25,22 @@ const tappingAPI = useTappingShared()
 
 const s = computed(() => settings.settings)
 const META = FIELD_META
+
+/**
+ * 描边位置选项。
+ *
+ * 【为什么没有「内侧」】
+ * CSS 的 -webkit-text-stroke 线宽永远以字形轮廓为中心，没有属性能推到内侧；
+ * SVG2 的 stroke-alignment: inner 至今无浏览器实现（实测 Edge 155 → false）。
+ * 唯一近似手段是 SVG 滤镜 feMorphology erode，但它会把填充一起吃掉、
+ * 半径不随字号缩放，且与 canvas 的结果对不上（实测 IoU 仅 0.38）——
+ * 那会破坏本项目的核心契约「导出 = 预览」，所以不做。
+ * 外侧与居中都能在 CSS 与 canvas 上用同一套绘制顺序表达，天然一致。
+ */
+const STROKE_POSITIONS = [
+  { value: 'outer', label: '外侧（默认）' },
+  { value: 'center', label: '居中（内外各半）' },
+]
 
 // ── 自定义字体（会话内）──
 /** 字体加载中：字体文件可能几 MB，加载要几秒，必须给反馈 */
@@ -94,8 +110,12 @@ const showDiagButton = (() => {
   }
 })()
 
-/** 哪些颜色项展开了调色盘（默认只展开当前行颜色，这是最常调的一项） */
-const openPicker = ref(/** @type {Record<string, boolean>} */ ({ active: true }))
+/**
+ * 哪些颜色项展开了调色盘。
+ * 默认只展开当前行颜色（最常调的一项）；描边颜色默认收起 ——
+ * 描边整体默认关闭，没必要一进面板就展开一个空的调色盘。
+ */
+const openPicker = ref(/** @type {Record<string, boolean>} */ ({ active: true, stroke: false }))
 
 /** 导出面板默认收起（骨架阶段，避免占满抽屉） */
 const showExport = ref(false)
@@ -495,6 +515,85 @@ function onOpenTapping() {
               />
             </div>
           </div>
+        </section>
+
+        <!-- ============ 文字描边 ============ -->
+        <section class="group">
+          <h3 class="group__title">文字描边</h3>
+
+          <label class="field">
+            <span class="field__label">
+              描边粗细
+              <em class="field__value">{{ s.stroke.width }}{{ META['stroke.width'].unit }}</em>
+            </span>
+            <input
+              class="field__control"
+              type="range"
+              :min="META['stroke.width'].min"
+              :max="META['stroke.width'].max"
+              :step="META['stroke.width'].step"
+              :value="s.stroke.width"
+              @input="settings.set('stroke.width', Number($event.target.value))"
+            />
+          </label>
+
+          <p class="group__note">
+            拖到 0 即关闭描边（默认关闭）。单位 em 随字号等比缩放，改字号或换分辨率都不用重调。
+          </p>
+
+          <!--
+            描边位置。
+            【为什么只有外侧和居中】
+            内侧在 CSS 里做不到（stroke-alignment: inner 无浏览器实现），
+            唯一近似手段 erode 滤镜会吃掉填充、且与导出对不上 ——
+            会破坏"导出 = 预览"。这里只给两种真正能做一致的选项。
+          -->
+          <label class="field">
+            <span class="field__label">描边位置</span>
+            <select
+              class="field__control"
+              :value="s.stroke.position"
+              @change="settings.set('stroke.position', $event.target.value)"
+            >
+              <option v-for="p in STROKE_POSITIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
+            </select>
+          </label>
+
+          <div class="field">
+            <button class="field__toggle" type="button" :aria-expanded="openPicker.stroke" @click="togglePicker('stroke')">
+              <span class="field__chevron" :class="{ 'is-open': openPicker.stroke }" aria-hidden="true">▸</span>
+              描边颜色
+              <span class="field__dot" :style="{ background: resolveStrokeColor(s) }" />
+            </button>
+            <div v-show="openPicker.stroke" class="field__panel">
+              <ColorPicker
+                :model-value="s.stroke.color"
+                label="描边颜色"
+                @update:model-value="settings.set('stroke.color', $event)"
+                @invalid="onColorInvalid('strokeColor', $event)"
+              />
+            </div>
+          </div>
+
+          <label class="field">
+            <span class="field__label">
+              描边明亮
+              <em class="field__value">{{ s.stroke.brightness }}{{ META['stroke.brightness'].unit }}</em>
+            </span>
+            <input
+              class="field__control"
+              type="range"
+              :min="META['stroke.brightness'].min"
+              :max="META['stroke.brightness'].max"
+              :step="META['stroke.brightness'].step"
+              :value="s.stroke.brightness"
+              @input="settings.set('stroke.brightness', Number($event.target.value))"
+            />
+          </label>
+
+          <p class="group__note">
+            「颜色」决定色相（红/蓝/青…），「明亮」单独决定明暗：0 = 纯黑，100 = 纯白。
+          </p>
         </section>
 
         <!-- ============ 布局 ============ -->

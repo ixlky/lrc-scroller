@@ -30,6 +30,7 @@ import {
   findResolution,
   nearestResolutionId,
   resolveFontFamily,
+  resolveStrokeColor,
 } from '../src/core/settings.js'
 import { makeMessage, fromError, CODES } from '../src/core/errors.js'
 import { parseLrc, withOffset, reapplyOffset } from '../src/core/lrcParser.js'
@@ -3175,6 +3176,11 @@ function makeProbeCanvas(w, h) {
     textBaseline: '',
     textAlign: '',
     fillStyle: '',
+    // ── 描边相关（canvas 的这些属性都是 ctx 上的全局状态，不是绘制参数）──
+    strokeStyle: '',
+    lineWidth: 0,
+    lineJoin: '',
+    miterLimit: 0,
     clearRect() {
       ops.push({ op: 'clearRect' })
     },
@@ -3204,8 +3210,25 @@ function makeProbeCanvas(w, h) {
     fillText(text, x, y) {
       ops.push({ op: 'text', text, x, y, font, fillStyle: String(this.fillStyle) })
     },
+    strokeText(text, x, y) {
+      ops.push({
+        op: 'stroke',
+        text,
+        x,
+        y,
+        font,
+        strokeStyle: String(this.strokeStyle),
+        lineWidth: Number(this.lineWidth),
+        lineJoin: String(this.lineJoin),
+      })
+    },
   }
-  return { canvas: { width: w, height: h, getContext: () => ctx }, ops, texts: () => ops.filter((o) => o.op === 'text') }
+  return {
+    canvas: { width: w, height: h, getContext: () => ctx },
+    ops,
+    texts: () => ops.filter((o) => o.op === 'text'),
+    strokes: () => ops.filter((o) => o.op === 'stroke'),
+  }
 }
 
 function drawAt(settings, lines, t, w = 1280, h = 720) {
@@ -4296,6 +4319,349 @@ test('空 tapped 不改变任何东西', () => {
   assert.equal(r.applied, 0)
   assert.equal(store.lines.length, 1, 'lines 不变')
   assert.equal(store.droppedLines.length, 1, 'droppedLines 不变')
+})
+
+// ─────────────────────────────────────────────
+group('文字描边 · 设置与校验')
+
+test('描边默认关闭（width = 0），老用户升级后观感不变', () => {
+  const s = createDefaultSettings()
+  assert.equal(s.stroke.width, 0, '默认必须是 0，否则升级后所有人的画面都会变')
+  assert.equal(typeof s.stroke.color, 'string')
+  assert.equal(typeof s.stroke.brightness, 'number')
+})
+
+test('描边字段的脏数据回落默认（越界/错类型/缺失）', () => {
+  const d = createDefaultSettings()
+  // 注意：数字字符串会被 pick() 归一化成数字（"0.2" → 0.2），
+  // 这是所有数值字段的共同行为（font.size 的 "50" 同样→50），
+  // 对 localStorage 里存成字符串的老数据是必要的兼容，不算脏数据。
+  for (const bad of [-1, 0.5, 999, NaN, Infinity, null, {}]) {
+    const s = sanitizeSettings({ stroke: { width: bad } })
+    assert.equal(s.stroke.width, d.stroke.width, `width=${JSON.stringify(bad)} 应回落默认`)
+  }
+  for (const bad of [-5, 101, NaN, 'x', undefined]) {
+    const s = sanitizeSettings({ stroke: { brightness: bad } })
+    assert.equal(s.stroke.brightness, d.stroke.brightness, `brightness=${JSON.stringify(bad)} 应回落默认`)
+  }
+})
+
+test('描边宽度的数字字符串被归一化（与其他数值字段一致）', () => {
+  assert.equal(sanitizeSettings({ stroke: { width: '0.2' } }).stroke.width, 0.2)
+  // 与既有字段行为保持一致，确认不是这里特例
+  assert.equal(sanitizeSettings({ font: { size: '50' } }).font.size, 50)
+})
+
+test('描述字段的合法值被保留', () => {
+  const s = sanitizeSettings({
+    stroke: { width: 0.12, color: '#FF0000', brightness: 55 },
+  })
+  assert.equal(s.stroke.width, 0.12)
+  assert.equal(s.stroke.color, '#ff0000', '颜色应被归一化为小写 #rrggbb')
+  assert.equal(s.stroke.brightness, 55)
+})
+
+test('旧设置（完全没有 stroke 段）能平滑升级', () => {
+  const old = { version: 1, font: { size: 50 }, color: { normal: '#123456' } }
+  const s = sanitizeSettings(old)
+  assert.equal(s.stroke.width, 0, '老数据应得到"关闭"的默认值')
+  assert.equal(s.font.size, 50, '其他字段不受影响')
+  assert.equal(s.color.normal, '#123456')
+})
+
+// ─────────────────────────────────────────────
+group('文字描边 · resolveStrokeColor（颜色 + 明亮 的分工）')
+
+test('明亮 = 0 输出纯黑（无论选了什么颜色）', () => {
+  for (const c of ['#ff0000', '#00ff00', '#123456', '#ffffff']) {
+    assert.equal(
+      resolveStrokeColor({ stroke: { color: c, brightness: 0 } }),
+      '#000000',
+      `brightness=0 时 ${c} 应变成纯黑`,
+    )
+  }
+})
+
+test('明亮 = 100 输出纯白（无论选了什么颜色）', () => {
+  for (const c of ['#ff0000', '#00ff00', '#123456', '#000000']) {
+    assert.equal(resolveStrokeColor({ stroke: { color: c, brightness: 100 } }), '#ffffff')
+  }
+})
+
+test('明亮保持在中间时保留色相（红仍是红，不是灰）', () => {
+  const red = resolveStrokeColor({ stroke: { color: '#ff0000', brightness: 50 } })
+  const rgb = hexToRgb(red)
+  assert.ok(rgb, `应产出合法 hex，实际 ${red}`)
+  assert.ok(rgb.r > 200 && rgb.g < 60 && rgb.b < 60, `应仍是红色，实际 ${red}`)
+})
+
+test('调明亮不改变色相：同一颜色的不同明度应当同色系', () => {
+  const hues = [10, 30, 50, 70].map((b) => {
+    const hex = resolveStrokeColor({ stroke: { color: '#3366ff', brightness: b } })
+    return hexToHsl(hex).h
+  })
+  const spread = Math.max(...hues) - Math.min(...hues)
+  assert.ok(spread < 12, `色相不该随明度漂移，实际分布 ${JSON.stringify(hues)}`)
+})
+
+test('明度单调递增：brightness 越大越亮', () => {
+  const lums = [0, 25, 50, 75, 100].map((b) => {
+    const rgb = hexToRgb(resolveStrokeColor({ stroke: { color: '#3366ff', brightness: b } }))
+    return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b
+  })
+  for (let i = 1; i < lums.length; i++) {
+    assert.ok(lums[i] >= lums[i - 1], `亮度应单调不减：${JSON.stringify(lums)}`)
+  }
+})
+
+test('脏输入不抛异常，回落到可用的颜色', () => {
+  for (const bad of [undefined, {}, { stroke: {} }, { stroke: { color: 'nope' } }, null]) {
+    const out = resolveStrokeColor(bad)
+    assert.match(out, /^#[0-9a-f]{6}$/, `${JSON.stringify(bad)} 应产出合法 hex，实际 ${out}`)
+  }
+})
+
+test('brightness 越界被夹取（不产出非法 hex）', () => {
+  assert.equal(resolveStrokeColor({ stroke: { color: '#ff0000', brightness: -20 } }), '#000000')
+  assert.equal(resolveStrokeColor({ stroke: { color: '#ff0000', brightness: 500 } }), '#ffffff')
+})
+
+// ─────────────────────────────────────────────
+group('文字描边 · CSS 变量（预览侧）')
+
+test('toCssVars 输出描边宽度与颜色变量', () => {
+  const s = createDefaultSettings()
+  s.stroke.width = 0.08
+  s.stroke.color = '#ff0000'
+  s.stroke.brightness = 0
+  const vars = toCssVars(s)
+  assert.equal(vars['--lrc-stroke-width'], '0.08em', '宽度必须是 em，才能随字号与翻译行等比缩放')
+  assert.equal(vars['--lrc-stroke-color'], '#000000', '颜色应经过「明亮」换算')
+})
+
+test('描边位置默认为外侧（老用户观感不变）', () => {
+  assert.equal(createDefaultSettings().stroke.position, 'outer')
+})
+
+test('描边位置只接受 outer/center，其余回落默认', () => {
+  assert.equal(sanitizeSettings({ stroke: { position: 'center' } }).stroke.position, 'center')
+  // 'inner' 是刻意不支持的取值 —— CSS 无法实现，必须被挡回 outer
+  for (const bad of ['inner', 'inside', 'OUTER', '', 'x', 42, null, {}]) {
+    assert.equal(
+      sanitizeSettings({ stroke: { position: bad } }).stroke.position,
+      'outer',
+      `position=${JSON.stringify(bad)} 应回落 outer`,
+    )
+  }
+})
+
+test('toCssVars：位置映射成 paint-order 值', () => {
+  const outer = createDefaultSettings()
+  assert.equal(toCssVars(outer)['--lrc-stroke-order'], 'stroke fill')
+  const center = sanitizeSettings({ stroke: { position: 'center' } })
+  assert.equal(toCssVars(center)['--lrc-stroke-order'], 'fill stroke')
+})
+
+test('旧设置（没有 position 字段）升级后是外侧', () => {
+  const old = { version: 1, stroke: { width: 0.1, color: '#ff0000', brightness: 50 } }
+  assert.equal(sanitizeSettings(old).stroke.position, 'outer')
+  assert.equal(sanitizeSettings(old).stroke.width, 0.1, '其他描边字段不受影响')
+})
+
+// ─────────────────────────────────────────────
+group('文字描边 · 导出（canvas 侧）')
+
+/** 造带描边设置的 settings */
+const withStroke = (width, { color = '#ff0000', brightness = 50 } = {}) => ({
+  ...scrollSettings,
+  stroke: { width, color, brightness },
+})
+
+const strokeLines = [
+  { t: 0, text: '普通行', empty: false },
+  { t: 5, text: '当前行', empty: false },
+]
+
+test('默认（width 0）不画任何描边', () => {
+  const probe = drawAt(scrollSettings, strokeLines, 0.1)
+  assert.equal(probe.strokes().length, 0, '关闭时不该有 strokeText 调用')
+})
+
+test('开启后每段文字都先描边再填充（等价 paint-order: stroke fill）', () => {
+  const probe = drawAt(withStroke(0.1), strokeLines, 6.0)
+  const strokes = probe.strokes()
+  assert.ok(strokes.length > 0, '应画出描边')
+  assert.equal(strokes.length, probe.texts().length, '每个 fillText 都应有配对的 strokeText')
+
+  /*
+   * 顺序断言：canvas 没有 paint-order 属性，只能靠"先 stroke 后 fill"实现。
+   * 反序会让描边盖住字形内部（实测白色像素只有 1/16），必须锁死。
+   */
+  const seq = probe.ops.filter((o) => o.op === 'stroke' || o.op === 'text').map((o) => o.op)
+  for (let i = 0; i < seq.length; i += 2) {
+    assert.equal(seq[i], 'stroke', `第 ${i} 步应是描边，实际顺序 ${JSON.stringify(seq)}`)
+    assert.equal(seq[i + 1], 'text', `第 ${i + 1} 步应是填充，实际顺序 ${JSON.stringify(seq)}`)
+  }
+})
+
+test('线宽 = 宽度(em) × 该行字号', () => {
+  const probe = drawAt(withStroke(0.1), strokeLines, 0.1)
+  const st = probe.strokes()[0]
+  const size = Number(st.font.match(/(\d+(?:\.\d+)?)px/)[1])
+  assert.ok(
+    Math.abs(st.lineWidth - 0.1 * size) < 1e-6,
+    `线宽应为 0.1×${size}=${0.1 * size}，实际 ${st.lineWidth}`,
+  )
+})
+
+test('翻译行的描边同比更细（与 CSS 的 em 语义一致）', () => {
+  const lines = [
+    { t: 0, text: '原文', empty: false },
+    { t: 5, text: 'translation', empty: false, isTranslation: true },
+    { t: 10, text: '下一句', empty: false },
+  ]
+  const probe = drawAt(withStroke(0.1), lines, 6.0)
+  const byText = new Map(probe.strokes().map((s) => [s.text, s]))
+  const main = byText.get('translation') ? byText.get('原文') : null
+  assert.ok(main, '应画出主歌词')
+  const trans = byText.get('translation')
+  assert.ok(trans, '应画出翻译行')
+  assert.ok(
+    trans.lineWidth < main.lineWidth,
+    `翻译行描边应更细：主 ${main.lineWidth} vs 翻译 ${trans.lineWidth}`,
+  )
+  // 比例应约等于 0.62（与 .is-translation 的 font-size: 0.62em 对齐）
+  const ratio = trans.lineWidth / main.lineWidth
+  assert.ok(Math.abs(ratio - 0.62) < 0.05, `细化比例应约 0.62，实际 ${ratio}`)
+})
+
+test('描边颜色用 resolveStrokeColor 的结果（与预览同一个字符串）', () => {
+  /*
+   * 明亮取 20（而不是 50）：#00ff00 的原生明度恰好是 50，
+   * 取 50 时「明亮」等于原值、输出与选色相同，就测不出这层换算是否生效。
+   */
+  const s = withStroke(0.1, { color: '#00ff00', brightness: 20 })
+  const probe = drawAt(s, strokeLines, 0.1)
+  const expected = resolveStrokeColor(s)
+  assert.equal(probe.strokes()[0].strokeStyle, expected)
+  assert.notEqual(expected, '#00ff00', '这是「明亮」生效后的值，不该等于原始选色')
+})
+
+test('lineJoin=round 与 CSS 的圆滑转角对齐', () => {
+  const probe = drawAt(withStroke(0.1), strokeLines, 0.1)
+  assert.equal(probe.strokes()[0].lineJoin, 'round')
+})
+
+test('描边在缩放分支里也被放大（lineWidth 按未缩放字号算）', () => {
+  /*
+   * 当前行走的是 translate + scale 分支。实测 CSS 行为：
+   * 父级 scale(2) 时 2em 仍按**未缩放**的 font-size 解析，然后被 transform 放大。
+   * canvas 必须一致 —— lineWidth 乘的是 row.drawSize（未缩放），
+   * 由 ctx.scale 负责放大。
+   */
+  const probe = drawAt(withStroke(0.1), strokeLines, 6.0)
+  assert.ok(probe.ops.some((o) => o.op === 'scale'), '当前行应走缩放分支')
+  const st = probe.strokes()[0]
+  const size = Number(st.font.match(/(\d+(?:\.\d+)?)px/)[1])
+  assert.ok(
+    Math.abs(st.lineWidth - 0.1 * size) < 1e-6,
+    `缩放分支中线宽仍按未缩放字号算，实际 ${st.lineWidth} vs ${0.1 * size}`,
+  )
+})
+
+test('空行（间奏）也描边（描边作用于全部行）', () => {
+  const lines = [
+    { t: 0, text: '前一句', empty: false },
+    { t: 5, text: '', empty: true },
+  ]
+  const probe = drawAt(withStroke(0.1), lines, 5.5)
+  const hasEmpty = probe.strokes().some((s) => s.text === EMPTY_LABEL)
+  assert.ok(hasEmpty, '间奏占位也应描边')
+})
+
+test('描边不改变文字内容与填充（只是多画一层轮廓）', () => {
+  const plain = drawAt(scrollSettings, strokeLines, 0.1)
+  const stroked = drawAt(withStroke(0.1), strokeLines, 0.1)
+  assert.deepEqual(
+    stroked.texts().map((t) => t.text),
+    plain.texts().map((t) => t.text),
+    '文字内容应完全一致',
+  )
+  assert.deepEqual(
+    stroked.texts().map((t) => t.fillStyle),
+    plain.texts().map((t) => t.fillStyle),
+    '填充色不应受描边影响',
+  )
+})
+
+// ── 描边位置：外侧 / 居中 ──
+const withPosition = (position, width = 0.1) => ({
+  ...scrollSettings,
+  stroke: { width, color: '#ff0000', brightness: 50, position },
+})
+
+/** 取出绘制顺序序列（只看 text / stroke 两类操作） */
+const paintSeq = (probe) =>
+  probe.ops.filter((o) => o.op === 'stroke' || o.op === 'text').map((o) => o.op)
+
+test('position=outer 时先描边再填充（填充盖住内半 → 只露外侧）', () => {
+  const probe = drawAt(withPosition('outer'), strokeLines, 0.1)
+  const seq = paintSeq(probe)
+  assert.ok(seq.length > 0, '应有绘制')
+  for (let i = 0; i < seq.length; i += 2) {
+    assert.equal(seq[i], 'stroke', `外侧应先描边，实际 ${JSON.stringify(seq)}`)
+    assert.equal(seq[i + 1], 'text')
+  }
+})
+
+test('position=center 时先填充再描边（描边压在上面 → 内外各半）', () => {
+  const probe = drawAt(withPosition('center'), strokeLines, 0.1)
+  const seq = paintSeq(probe)
+  assert.ok(seq.length > 0, '应有绘制')
+  for (let i = 0; i < seq.length; i += 2) {
+    assert.equal(seq[i], 'text', `居中应先填充，实际 ${JSON.stringify(seq)}`)
+    assert.equal(seq[i + 1], 'stroke')
+  }
+})
+
+test('两种位置的描边数量与颜色一致（只有顺序不同）', () => {
+  const outer = drawAt(withPosition('outer'), strokeLines, 0.1)
+  const center = drawAt(withPosition('center'), strokeLines, 0.1)
+  assert.equal(outer.strokes().length, center.strokes().length, '描边笔数应相同')
+  assert.deepEqual(
+    outer.strokes().map((s) => s.lineWidth),
+    center.strokes().map((s) => s.lineWidth),
+    '线宽不应因位置而变（线宽始终以轮廓为中心，位置只改绘制顺序）',
+  )
+  assert.deepEqual(
+    outer.strokes().map((s) => s.strokeStyle),
+    center.strokes().map((s) => s.strokeStyle),
+  )
+})
+
+test('position=center 时描边与填充的位置完全相同（同一字形上叠加）', () => {
+  const probe = drawAt(withPosition('center'), strokeLines, 0.1)
+  const seq = probe.ops.filter((o) => o.op === 'stroke' || o.op === 'text')
+  for (let i = 0; i < seq.length; i += 2) {
+    const fill = seq[i]
+    const stroke = seq[i + 1]
+    assert.equal(fill.text, stroke.text, '同一段文字')
+    assert.equal(fill.x, stroke.x, `x 应一致（${fill.x} vs ${stroke.x}）`)
+    assert.equal(fill.y, stroke.y, `y 应一致（${fill.y} vs ${stroke.y}）`)
+  }
+})
+
+test('position 不是 center 的任何取值都按外侧处理（与 pickEnum 兜底一致）', () => {
+  // 直接传脏值到渲染层（绕过 sanitize），确认渲染层也是"非 center 即 outer"
+  const probe = drawAt({ ...scrollSettings, stroke: { width: 0.1, color: '#ff0000', brightness: 50, position: 'inner' } }, strokeLines, 0.1)
+  assert.equal(paintSeq(probe)[0], 'stroke', '未知取值应按外侧（先描后填）')
+})
+
+test('关闭描边时位置无关紧要（两种位置都不画描边）', () => {
+  for (const pos of ['outer', 'center']) {
+    const probe = drawAt({ ...scrollSettings, stroke: { width: 0, color: '#ff0000', brightness: 50, position: pos } }, strokeLines, 0.1)
+    assert.equal(probe.strokes().length, 0, `position=${pos} 且宽度 0 时不应有描边`)
+  }
 })
 
 // ─────────────────────────────────────────────

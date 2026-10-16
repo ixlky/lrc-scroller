@@ -35,6 +35,7 @@ import { computeRenderOpacities, createDefaultFade } from './fade.js'
 import { smoothTowards, computeCenteringOffset } from './scroll.js'
 import { findLineIndexAt } from './timeUtils.js'
 import { easeCurve, transitionCurve, progress, lerp } from './motion.js'
+import { resolveStrokeColor } from './settings.js'
 
 /** 设计基准高度（px）：字号以这个高度为准定义 */
 export const BASE_HEIGHT = 1080
@@ -659,6 +660,24 @@ export function renderFrame({
   ctx.textBaseline = 'middle'
   ctx.textAlign = isLeft ? 'left' : isRight ? 'right' : 'center'
 
+  /*
+   * 描边参数（在 drawRow 之前算好，逐行复用）。
+   *
+   * width 为 0 或非法即视为关闭 —— 与预览一致：CSS 里 0em 不画描边，
+   * 不需要单独的开关，也不需要在循环里反复判断设置对象。
+   */
+  const strokeCfg = settings?.stroke ?? {}
+  const strokeWidthEm = Number(strokeCfg.width)
+  const strokeOn = Number.isFinite(strokeWidthEm) && strokeWidthEm > 0
+  // 与预览共用同一个颜色字符串（含「明亮」换算），避免两边算两套
+  const strokeColor = strokeOn ? resolveStrokeColor(settings) : '#000000'
+  /*
+   * 描边位置。'center' 时填充先画、描边压在上面（paint-order: fill stroke）；
+   * 否则向外（paint-order: stroke fill）。与 toCssVars 的 --lrc-stroke-order 同源。
+   * 非 'center' 的一切取值都按向外处理 —— 与 pickEnum 的白名单兜底一致。
+   */
+  const strokeCenter = strokeCfg.position === 'center'
+
   /**
    * 画一行的文字块（已换好的行数组），整体以 cy 为中心。
    * @param {any} row
@@ -674,29 +693,92 @@ export function renderFrame({
     ctx.letterSpacing = Number.isFinite(lsCfg) && lsCfg !== 0 ? `${(size * lsCfg).toFixed(3)}px` : '0px'
     ctx.fillStyle = fill
 
+    /*
+     * 描边设置。
+     *
+     * 【为什么用 row.drawSize（而不是 baseFontSize）】
+     * CSS 的 em 按**元素自己的字号**解析：翻译行 `font-size: 0.62em`，
+     * 它的描边也同比更细。row.drawSize 已经含了翻译行的缩小，
+     * 所以这里乘出来的线宽与预览逐行对齐。
+     *
+     * 【线宽以字形轮廓为中心，内外各半】
+     * CSS 的 -webkit-text-stroke 与 canvas 的 strokeText 都是这个语义，
+     * 所以不需要补偿，也不要乘 2。
+     *
+     * 【lineJoin='round' 与 CSS 对齐】
+     * canvas 默认 miter 在尖角会甩出长刺；CSS 描边的转角是圆滑的。
+     * 取 round 让两者观感一致（miterLimit 一并收紧，避免个别字形出刺）。
+     */
+    const strokeWidth = strokeOn ? strokeWidthEm * size : 0
+    if (strokeOn) {
+      ctx.strokeStyle = strokeColor
+      ctx.lineWidth = strokeWidth
+      ctx.lineJoin = 'round'
+      ctx.miterLimit = 2
+    }
+
     const parts = row.textLines
     const total = parts.length
+
+    /**
+     * 画一个字形：顺序由「描边位置」决定。
+     *
+     * 【这就是 canvas 侧的 paint-order】
+     * canvas 没有 paint-order 属性，只能靠绘制顺序表达：
+     *   outer  → 先 strokeText 再 fillText：填充盖住内侧一半 → 只露外侧
+     *   center → 先 fillText 再 strokeText：描边压在填充上   → 内外各半
+     * 与预览的 CSS `paint-order` 一一对应（值由 toCssVars 的
+     * --lrc-stroke-order 产出），所以两边天然一致。
+     *
+     * 【为什么必须分两种顺序，不能统一成先描后填】
+     * 只支持"向外"时先描后填是对的（实测反序会让白色像素只剩 1/16，
+     * 描边吃掉字形内部）。但"居中"恰恰要求描边压在填充上面 ——
+     * 写死一种顺序，另一种位置就没法实现。
+     *
+     * @param {string} s
+     * @param {number} x
+     * @param {number} y
+     */
+    function paint(s, x, y) {
+      if (!strokeOn) {
+        ctx.fillText(s, x, y)
+        return
+      }
+      if (strokeCenter) {
+        ctx.fillText(s, x, y)
+        ctx.strokeText(s, x, y)
+      } else {
+        ctx.strokeText(s, x, y)
+        ctx.fillText(s, x, y)
+      }
+    }
 
     if (Number.isFinite(scale) && scale !== 1) {
       /*
        * 与预览的 `transform: scale()` 一致：以锚点为原点整体缩放，
        * 把**字间距、行内间距**一起缩放，而不是只放大字号
        * （只放大字号会让字间距仍是原比例，观感偏松散）。
+       *
+       * 描边也一并被 ctx.scale 放大，且 lineWidth 是按**未缩放**的 size 算的 ——
+       * 与 CSS 实测行为完全一致（父级 scale(2) 时 2em 仍按未缩放字号解析）。
        */
       ctx.save()
       ctx.translate(anchorX, cy)
       ctx.scale(scale, scale)
       for (let j = 0; j < total; j++) {
         const y = (j - (total - 1) / 2) * size * lineHeight
-        ctx.fillText(parts[j], 0, y)
+        paint(parts[j], 0, y)
       }
       ctx.restore()
     } else {
       for (let j = 0; j < total; j++) {
         const y = cy + (j - (total - 1) / 2) * size * lineHeight
-        ctx.fillText(parts[j], anchorX, y)
+        paint(parts[j], anchorX, y)
       }
     }
+
+    // 描边状态是 ctx 上的全局属性，不还原会污染下一行的绘制
+    if (strokeOn) ctx.lineWidth = 0
   }
 
   const off = Number.isFinite(scrollOffset) ? scrollOffset : 0

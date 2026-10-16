@@ -136,6 +136,45 @@ const style = () => {
   display: block;
   max-width: var(--lrc-max-width);
   word-break: break-word;
+
+  /*
+   * 文字描边。
+   *
+   * 【为什么写在 span 上，而不是 .lyric-line 容器上】
+   * em 依赖 font-size。写在容器上会继承容器的 --lrc-font-size（基准字号），
+   * 而翻译行是 `.is-translation .lyric-line__text { font-size: 0.62em }` ——
+   * span 自己的字号更小。写在 span 上，em 自动按 span 的字号解析，
+   * 于是翻译行的描边同比更细，与主歌词的视觉比例一致。
+   * （实测确认：字号 20px 的 span 上 1em 描边 = 20px，而不是容器的 40px。）
+   *
+   * 【paint-order 由「描边位置」决定，不能写死】
+   * 变量 --lrc-stroke-order 由 core/settings.js 的 toCssVars 产出：
+   *   outer  → 'stroke fill'  描边画在填充下面，内半被填充盖住 → 向外
+   *   center → 'fill stroke'  描边压在填充上面，内外各半       → 居中
+   * 早先写死 stroke fill，选了"居中"预览也不会变。canvas 侧用同一套顺序
+   * （见 core/renderFrame.js 的 paint()），两边天然一致。
+   *
+   * 【为什么没有「内侧」】
+   * CSS 无法把描边推到字形内侧：-webkit-text-stroke 的线宽永远以轮廓为中心，
+   * 而 SVG2 的 stroke-alignment: inner 至今无浏览器实现（实测 Edge 155
+   * CSS.supports 返回 false）。唯一能"腐蚀"字形的是 SVG 滤镜 feMorphology
+   * erode，但它会把填充一起吃掉、半径不随字号缩放，且与 canvas 的结果对不上
+   * （实测绿色区域 IoU 仅 0.38）—— 那会破坏"导出 = 预览"这个核心契约。
+   * 详见 core/settings.js 里 stroke.position 的说明。
+   *
+   * 【width 为 0 时】
+   * 0em 是合法的 CSS 长度，浏览器不会画描边，所以"默认关闭"不需要额外的开关，
+   * 也不需要在模板里加条件判断。
+   *
+   * 【em 与 transform 的关系（与导出对齐的关键）】
+   * 实测：父级 transform: scale(2) 时，2em 描边的 computed 值仍是 80px
+   * （基于**未缩放**的 font-size 40px 解析），随后被 transform 一起放大。
+   * 这正是 canvas 的行为 —— ctx.scale(scale) 之后 lineWidth = em × 未缩放字号，
+   * 描边随 transform 缩放。两条路径数学上完全一致。
+   */
+  -webkit-text-stroke-width: var(--lrc-stroke-width);
+  -webkit-text-stroke-color: var(--lrc-stroke-color);
+  paint-order: var(--lrc-stroke-order, stroke fill);
 }
 
 /* 已唱过的行更暗，形成进度感（虚化关闭时才生效） */
